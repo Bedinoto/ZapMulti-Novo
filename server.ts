@@ -7,7 +7,6 @@ import makeWASocket, {
   DisconnectReason, 
   useMultiFileAuthState as makeMultiFileAuthState, 
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
   jidNormalizedUser,
   downloadMediaMessage,
 } from '@whiskeysockets/baileys';
@@ -30,167 +29,461 @@ const nextApp = (next as any).default || next;
 const app = nextApp({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-const logger = pino({ level: 'info' });
+function normalizeJid(rawJid: string): string {
+    if (!rawJid) return '';
+    let jid = jidNormalizedUser(rawJid);
+    if (jid.endsWith('@c.us')) jid = jid.replace('@c.us', '@s.whatsapp.net');
+    if (jid.endsWith('@lid')) jid = jid.replace('@lid', '@s.whatsapp.net');
+    return jid;
+}
 
-console.log('Starting server initialization...');
+async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io: Server) {
+    if (!jid) return;
+    
+    // Ensure we have the @s.whatsapp.net version for our internal storage keys
+    const normalizedJid = normalizeJid(jid);
+    
+    // But for lid-mapping lookup, we might need the @lid version if it's an LID
+    // Baileys usually stores them with their native domain in the key-value store
+    const lidJid = jid.includes('@') ? (jid.split('@')[0] + '@lid') : (jid + '@lid');
+    const pnJidNative = jid.includes('@') ? (jid.split('@')[0] + '@s.whatsapp.net') : (jid + '@s.whatsapp.net');
 
-// State for the WhatsApp connection
-let sock: any = null;
-let qrCode: string | null = null;
-let connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'qr' = 'disconnected';
-let userInfo: any = null;
+    try {
+        // Try looking up by the jid as provided, and also by its LID/PN variants
+        const lookups = [jid, lidJid, pnJidNative];
+        const mappings = await state.keys.get('lid-mapping', lookups);
+        
+        if (mappings) {
+            for (const [key, value] of Object.entries(mappings)) {
+                if (!value) continue;
+                
+                const otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
+                if (!otherJidRaw) continue;
 
-// In-memory store for chats and messages
+                const jid1 = normalizeJid(key);
+                const jid2 = normalizeJid(otherJidRaw);
+                
+                const chatKey1 = `${sessionId}--${jid1}`;
+                const chatKey2 = `${sessionId}--${jid2}`;
+                
+                if (chatKey1 === chatKey2) continue;
+
+                // We have two different keys that represent the same person
+                if (chats[chatKey1] && chats[chatKey2]) {
+                    console.log(`Merging chats: ${chatKey1} and ${chatKey2}`);
+                    // Merge into the one that is NOT an LID if possible, or just the first one
+                    // Usually the one with more messages or the one that is a PN
+                    const isJid1Lid = key.includes('@lid');
+                    const sourceKey = isJid1Lid ? chatKey1 : chatKey2;
+                    const targetKey = isJid1Lid ? chatKey2 : chatKey1;
+                    const sourceJid = isJid1Lid ? jid1 : jid2;
+
+                    console.log(`Source: ${sourceKey}, Target: ${targetKey}`);
+
+                    // Merge messages
+                    const mergedMessages = [
+                        ...chats[targetKey].messages,
+                        ...chats[sourceKey].messages
+                    ].sort((a, b) => (a.messageTimestamp as number) - (b.messageTimestamp as number));
+                    
+                    // Deduplicate
+                    const seen = new Set();
+                    chats[targetKey].messages = mergedMessages.filter((m: any) => {
+                        if (seen.has(m.key.id)) return false;
+                        seen.add(m.key.id);
+                        return true;
+                    });
+
+                    // Update last message and timestamp
+                    if (chats[sourceKey].timestamp > chats[targetKey].timestamp) {
+                        chats[targetKey].timestamp = chats[sourceKey].timestamp;
+                        chats[targetKey].lastMessage = chats[sourceKey].lastMessage;
+                    }
+
+                    delete chats[sourceKey];
+                    io.emit('whatsapp:chat-deleted', { jid: sourceJid, chatKey: sourceKey });
+                    io.emit('whatsapp:chat-updated', chats[targetKey]);
+                    return; // Done merging
+                } else if (chats[chatKey1] && !chats[chatKey2]) {
+                    // If we only have the LID chat, we should probably rename it to PN chat if we know the PN
+                    // but wait, if we only have one, it's fine. The issue is when we have TWO.
+                    // However, renaming LID to PN helps prevent the "second" one from being created as PN later.
+                    const isJid1Lid = key.includes('@lid');
+                    if (isJid1Lid) {
+                        chats[chatKey2] = { ...chats[chatKey1], id: jid2, key: chatKey2 };
+                        delete chats[chatKey1];
+                        io.emit('whatsapp:chat-deleted', { jid: jid1, chatKey: chatKey1 });
+                        io.emit('whatsapp:chat-updated', chats[chatKey2]);
+                        return;
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error in mergeChatsIfNeeded:', e);
+    }
+}
+
+const logger = pino({ 
+  level: 'info',
+  timestamp: () => `,"time":"${new Date().toISOString()}"`,
+  hooks: {
+    logMethod(inputArgs, method, level) {
+            if (inputArgs.length >= 1) {
+                const stringified = JSON.stringify(inputArgs).toLowerCase();
+                const suppressStrings = [
+                    'bad mac',
+                    'no matching sessions',
+                    'failed to decrypt message',
+                    'intentional logout',
+                    'stream errored',
+                    'stream errored out'
+                ];
+                
+                if (suppressStrings.some(s => stringified.includes(s))) return;
+            }
+            return method.apply(this, inputArgs as [string, ...any[]]);
+    }
+  }
+});
+
+interface Session {
+  id: string;
+  sock: any;
+  state?: any;
+  qrCode: string | null;
+  status: 'connecting' | 'connected' | 'disconnected' | 'qr';
+  userInfo: any;
+}
+
+const sessions: Record<string, Session> = {};
 const chats: Record<string, any> = {};
 
-// Ensure media directory exists
 const mediaDir = path.join(process.cwd(), 'public', 'media');
 if (!fs.existsSync(mediaDir)) {
   fs.mkdirSync(mediaDir, { recursive: true });
 }
 
-// In-memory store for users (in a real app, use a database)
 const users: any[] = [
   { id: '1', name: 'Admin', email: 'admin@example.com', password: bcrypt.hashSync('admin123', 10), role: 'admin' },
   { id: '2', name: 'Agent 1', email: 'agent1@example.com', password: bcrypt.hashSync('agent123', 10), role: 'agent' },
 ];
 
-async function connectToWhatsApp(io: Server) {
-  console.log('Connecting to WhatsApp...');
-  connectionStatus = 'connecting';
-  io.emit('whatsapp:status', { status: 'connecting' });
+async function connectToWhatsApp(io: Server, sessionId: string) {
+  if (!sessions[sessionId]) {
+    sessions[sessionId] = {
+      id: sessionId,
+      sock: null,
+      qrCode: null,
+      status: 'connecting',
+      userInfo: null
+    };
+  }
+
+  sessions[sessionId].status = 'connecting';
+  io.emit('whatsapp:session-status', { sessionId, status: 'connecting' });
 
   try {
-    const { state, saveCreds } = await makeMultiFileAuthState('auth_info_baileys');
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const authPath = `auth_info_baileys_${sessionId}`;
+    const { state, saveCreds } = await makeMultiFileAuthState(authPath);
+    sessions[sessionId].state = state;
+    const { version } = await fetchLatestBaileysVersion();
     
-    console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
-
-    sock = makeWASocket({
+    const sock = makeWASocket({
       version,
       printQRInTerminal: true,
       auth: state,
       logger,
       browser: ['WhatsApp Manager', 'Chrome', '1.0.0'],
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 10000,
+      retryRequestDelayMs: 2000,
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: true,
+      patchMessageBeforeSending: (message) => {
+        const requiresPatch = !!(
+            message.buttonsMessage ||
+            message.templateMessage ||
+            message.listMessage
+        );
+        if (requiresPatch) {
+            message = {
+                viewOnceMessage: {
+                    message: {
+                        messageContextInfo: {
+                            deviceListMetadataVersion: 2,
+                            deviceListMetadata: {},
+                        },
+                        ...message,
+                    },
+                },
+            };
+        }
+        return message;
+      },
+      getMessage: async (key) => {
+        if (!key.remoteJid) return undefined;
+        let jid = jidNormalizedUser(key.remoteJid);
+        
+        if (jid.endsWith('@lid')) {
+            try {
+                const mapping = await state.keys.get('lid-mapping', [jid]);
+                if (mapping && mapping[jid]) {
+                    const data = mapping[jid];
+                    let pn = typeof data === 'string' ? data : (data as any)?.pn;
+                    if (pn) jid = jidNormalizedUser(pn);
+                }
+            } catch (e) {
+                console.error('LID resolution failed in getMessage', e);
+            }
+        }
+
+        jid = normalizeJid(jid);
+
+        const chatKey = `${sessionId}--${jid}`;
+        if (chats[chatKey]) {
+            const msg = chats[chatKey].messages.find((m: any) => m.key.id === key.id);
+            return msg?.message || undefined;
+        }
+        return undefined;
+      },
     });
+
+    sessions[sessionId].sock = sock;
 
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      
+      if (!sessions[sessionId]) return;
+
       if (qr) {
-        qrCode = await QRCode.toDataURL(qr);
-        connectionStatus = 'qr';
-        io.emit('whatsapp:status', { status: 'qr', qr: qrCode });
+        sessions[sessionId].qrCode = await QRCode.toDataURL(qr);
+        sessions[sessionId].status = 'qr';
+        io.emit('whatsapp:session-status', { sessionId, status: 'qr', qr: sessions[sessionId].qrCode });
       }
 
       if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-        console.log('connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect);
-        connectionStatus = 'disconnected';
-        io.emit('whatsapp:status', { status: 'disconnected' });
-        if (shouldReconnect) {
-          connectToWhatsApp(io);
+        const error = lastDisconnect?.error;
+        const statusCode = (error as Boom)?.output?.statusCode;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut || error?.message === 'Intentional Logout';
+        const shouldReconnect = !isLoggedOut;
+        
+        if (isLoggedOut) {
+            console.log(`Session ${sessionId} logged out intentionally`);
+            if (sessions[sessionId]) {
+                sessions[sessionId].status = 'disconnected';
+                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
+            }
+        } else {
+            const errorMessage = (error as any)?.message || '';
+            const isStreamError = errorMessage.includes('Stream Errored');
+            const isBadMac = errorMessage.toLowerCase().includes('bad mac');
+
+            if (isBadMac) {
+                console.log(`Bad MAC detected for session ${sessionId}, clearing session folders to repair...`);
+                try {
+                    const authPath = `auth_info_baileys_${sessionId}`;
+                    const sessionPath = path.join(process.cwd(), authPath, 'sessions');
+                    const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
+                    
+                    if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+                    if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
+                    
+                    console.log(`Session folders cleared for ${sessionId}. Reconnecting...`);
+                } catch (e) {
+                    console.error('Failed to clear session folders on Bad MAC', e);
+                }
+            }
+
+            if (!isStreamError) {
+                console.log(`Session ${sessionId} connection closed due to `, error, ', reconnecting ', shouldReconnect);
+            }
+            
+            if (sessions[sessionId]) {
+                sessions[sessionId].status = 'disconnected';
+                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
+            }
+            
+            if (shouldReconnect) {
+              setTimeout(() => {
+                if (sessions[sessionId]) connectToWhatsApp(io, sessionId);
+              }, 2000);
+            }
         }
       } else if (connection === 'open') {
-        console.log('opened connection');
-        connectionStatus = 'connected';
-        qrCode = null;
-        userInfo = { ...sock.user, id: jidNormalizedUser(sock.user.id) };
-        io.emit('whatsapp:status', { status: 'connected', user: userInfo });
+        sessions[sessionId].status = 'connected';
+        sessions[sessionId].qrCode = null;
+        if (sock.user) {
+          sessions[sessionId].userInfo = { ...sock.user, id: normalizeJid(sock.user.id) };
+        }
+        io.emit('whatsapp:session-status', { 
+          sessionId, 
+          status: 'connected', 
+          user: sessions[sessionId].userInfo 
+        });
       }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('lid-mapping.update', (mappings: any) => {
-      for (const { lid, pn } of mappings) {
-        const normalizedLid = jidNormalizedUser(lid);
-        const normalizedPn = jidNormalizedUser(pn);
+    // Handle stream errors which often include Bad MAC or decryption issues
+    sock.ev.on('stream-error', (err) => {
+        const errorMessage = err?.message || '';
+        console.error(`Stream error in session ${sessionId}:`, errorMessage);
         
-        console.log(`LID Mapping update: ${normalizedLid} <-> ${normalizedPn}`);
-        
-        if (chats[normalizedLid] && !chats[normalizedPn]) {
-          chats[normalizedPn] = { ...chats[normalizedLid], id: normalizedPn };
-          delete chats[normalizedLid];
-          console.log(`Migrated chat from LID ${normalizedLid} to PN ${normalizedPn}`);
-        } else if (chats[normalizedLid] && chats[normalizedPn]) {
-          const combinedMessages = [...chats[normalizedPn].messages, ...chats[normalizedLid].messages]
-            .sort((a, b) => (a.messageTimestamp || 0) - (b.messageTimestamp || 0))
-            .filter((msg, index, self) => 
-              index === self.findIndex((m) => m.key.id === msg.key.id)
-            );
-          
-          chats[normalizedPn].messages = combinedMessages;
-          delete chats[normalizedLid];
-          console.log(`Merged LID chat ${normalizedLid} into PN chat ${normalizedPn}`);
+        if (errorMessage.toLowerCase().includes('bad mac')) {
+            console.log(`Bad MAC detected in stream for session ${sessionId}, clearing session folders...`);
+            try {
+                const authPath = `auth_info_baileys_${sessionId}`;
+                const sessionPath = path.join(process.cwd(), authPath, 'sessions');
+                const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
+                
+                if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+                if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
+                
+                // Force a reconnect
+                sock.end(undefined);
+            } catch (e) {
+                console.error('Failed to clear session folders on stream Bad MAC', e);
+            }
         }
-      }
+    });
+
+    sock.ev.on('chats.upsert', async (newChats) => {
+        for (const chat of newChats) {
+            if (!chat.id) continue;
+            let jid = normalizeJid(chat.id);
+            
+            // Try to resolve LID to PN immediately if possible
+            if (jid.includes('lid')) {
+                try {
+                    const mapping = await state.keys.get('lid-mapping', [jid]);
+                    if (mapping && mapping[jid]) {
+                        const data = mapping[jid];
+                        let pn = typeof data === 'string' ? data : (data as any)?.pn;
+                        if (pn) jid = normalizeJid(pn);
+                    }
+                } catch (e) {}
+            }
+
+            if (jid.includes('@broadcast') || jid === 'status@broadcast') continue;
+
+            const chatKey = `${sessionId}--${jid}`;
+            if (!chats[chatKey]) {
+                chats[chatKey] = {
+                    id: jid,
+                    sessionId,
+                    key: chatKey,
+                    name: chat.name || jid.split('@')[0],
+                    timestamp: Number(chat.conversationTimestamp) || Math.floor(Date.now() / 1000),
+                    unreadCount: chat.unreadCount || 0,
+                    messages: []
+                };
+            } else {
+                if (chat.name) chats[chatKey].name = chat.name;
+                if (chat.unreadCount) chats[chatKey].unreadCount = chat.unreadCount;
+            }
+
+            // Check if we need to merge after upserting
+            await mergeChatsIfNeeded(sessionId, jid, state, io);
+        }
+    });
+
+    sock.ev.on('chats.update', async (updates) => {
+        for (const update of updates) {
+            if (!update.id) continue;
+            const jid = normalizeJid(update.id);
+            const chatKey = `${sessionId}--${jid}`;
+            if (chats[chatKey]) {
+                if (update.name) chats[chatKey].name = update.name;
+                if (update.unreadCount) chats[chatKey].unreadCount = update.unreadCount;
+            }
+            await mergeChatsIfNeeded(sessionId, jid, state, io);
+        }
+    });
+
+    sock.ev.on('contacts.upsert', async (contacts) => {
+        for (const contact of contacts) {
+            if (contact.id) {
+                await mergeChatsIfNeeded(sessionId, contact.id, state, io);
+            }
+        }
+    });
+
+    sock.ev.on('contacts.update', async (updates) => {
+        for (const update of updates) {
+            if (update.id) {
+                await mergeChatsIfNeeded(sessionId, update.id, state, io);
+            }
+        }
     });
 
     sock.ev.on('messages.upsert', async (m: any) => {
       if (m.type === 'notify') {
         for (const msg of m.messages) {
+          // Check for decryption failure or Bad MAC
+          const isDecryptionFailure = msg.messageStubType === 1 || (msg.message && Object.keys(msg.message).length === 0);
+          
+          if (isDecryptionFailure) {
+            const jid = msg.key.remoteJid;
+            if (jid) {
+                console.log(`Decryption failure detected for ${jid}, attempting session repair...`);
+                try {
+                    // Clear both session and sender-key to force a full re-negotiation
+                    await state.keys.set({ 
+                        'session': { [jid]: null },
+                        'sender-key': { [jid]: null }
+                    });
+                    
+                    // Also try to resync if it's a critical failure
+                    if (sock.resyncMainAppState) {
+                        await sock.resyncMainAppState();
+                    }
+                } catch (e) {
+                    console.error('Failed to repair session', e);
+                }
+            }
+          }
+
           let rawJid = msg.key.remoteJid;
           if (!rawJid) continue;
           
-          if (rawJid.includes('@lid') && sock?.signalRepository?.lidMapping) {
+          let jid = jidNormalizedUser(rawJid);
+
+          if (jid.endsWith('@lid')) {
             try {
-              const mappedPn = await sock.signalRepository.lidMapping.getPNForLID(rawJid);
-              if (mappedPn) {
-                rawJid = mappedPn;
-                msg.key.remoteJid = mappedPn;
-              }
-            } catch (err) {
-              console.error('Error resolving LID to PN:', err);
+                const mapping = await state.keys.get('lid-mapping', [jid]);
+                if (mapping && mapping[jid]) {
+                    const data = mapping[jid];
+                    let pn = typeof data === 'string' ? data : (data as any)?.pn;
+                    if (pn) jid = jidNormalizedUser(pn);
+                }
+            } catch (e) {
+                console.error('LID resolution failed in messages.upsert', e);
             }
           }
-          
-          const jid = jidNormalizedUser(rawJid);
+
+          jid = normalizeJid(jid);
+
+          const chatKey = `${sessionId}--${jid}`;
           const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
                        (msg.message?.imageMessage ? '📷 Foto' : '') ||
                        (msg.message?.videoMessage ? '🎥 Vídeo' : '') ||
                        (msg.message?.audioMessage ? '🎤 Áudio' : '') ||
                        (msg.message?.documentMessage ? '📄 Documento' : '') || '';
           
-          // Handle Media
           if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.videoMessage || msg.message?.audioMessage) {
             try {
-              const buffer = await downloadMediaMessage(
-                msg,
-                'buffer',
-                {},
-                { 
-                  logger,
-                  reuploadRequest: sock.updateMediaMessage
-                }
-              );
-              
+              const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
               let extension = 'bin';
               let type = 'document';
-
-              if (msg.message.imageMessage) {
-                extension = 'jpeg';
-                type = 'image';
-              } else if (msg.message.videoMessage) {
-                extension = 'mp4';
-                type = 'video';
-              } else if (msg.message.audioMessage) {
-                extension = 'mp3'; // WhatsApp audio is usually ogg/mp4 but mp3 is safer for browser playback if converted, but raw file is usually ogg. Let's use ogg or mp3. Baileys downloads as is.
-                // Actually, let's check mimetype.
-                const mimetype = msg.message.audioMessage.mimetype;
-                extension = mimetype.split(';')[0].split('/')[1] || 'ogg';
-                // Common fix: WhatsApp sends ogg/opus. Browsers play ogg.
-                if (extension === 'mpeg') extension = 'mp3';
-                type = 'audio';
-              } else if (msg.message.documentMessage) {
-                extension = msg.message.documentMessage.mimetype.split('/')[1] || 'bin';
-                type = 'document';
-              }
+              if (msg.message.imageMessage) { extension = 'jpeg'; type = 'image'; }
+              else if (msg.message.videoMessage) { extension = 'mp4'; type = 'video'; }
+              else if (msg.message.audioMessage) { extension = 'ogg'; type = 'audio'; }
+              else if (msg.message.documentMessage) { extension = 'bin'; type = 'document'; }
 
               const fileName = `${msg.key.id}.${extension}`;
               const filePath = path.join(mediaDir, fileName);
               fs.writeFileSync(filePath, buffer);
-              
               msg.mediaUrl = `/media/${fileName}`;
               msg.mediaType = type;
               msg.fileName = msg.message.documentMessage?.fileName;
@@ -199,35 +492,38 @@ async function connectToWhatsApp(io: Server) {
             }
           }
 
-          if (!chats[jid]) {
-            chats[jid] = {
+          if (!chats[chatKey]) {
+            chats[chatKey] = {
               id: jid,
+              sessionId: sessionId,
+              key: chatKey,
               name: msg.pushName || jid.split('@')[0],
-              timestamp: msg.messageTimestamp,
+              timestamp: (msg.messageTimestamp as number) || Date.now() / 1000,
               unreadCount: 0,
               messages: []
             };
           }
 
-          chats[jid].lastMessage = text;
-          chats[jid].timestamp = msg.messageTimestamp;
+          chats[chatKey].lastMessage = text;
+          chats[chatKey].timestamp = (msg.messageTimestamp as number) || Date.now() / 1000;
           
-          const msgExists = chats[jid].messages.some((existingMsg: any) => existingMsg.key.id === msg.key.id);
+          const msgExists = chats[chatKey].messages.some((existingMsg: any) => existingMsg.key.id === msg.key.id);
           if (!msgExists) {
-            chats[jid].messages.push(msg);
-            if (chats[jid].messages.length > 50) {
-              chats[jid].messages.shift();
-            }
+            chats[chatKey].messages.push(msg);
+            if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
           }
 
-          io.emit('whatsapp:message', msg);
+          io.emit('whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
+          await mergeChatsIfNeeded(sessionId, jid, state, io);
         }
       }
     });
   } catch (err) {
-    console.error('Failed to connect to WhatsApp:', err);
-    connectionStatus = 'disconnected';
-    io.emit('whatsapp:status', { status: 'disconnected', error: 'Failed to connect' });
+    console.error(`Failed to connect to WhatsApp session ${sessionId}:`, err);
+    if (sessions[sessionId]) {
+        sessions[sessionId].status = 'disconnected';
+        io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'Failed to connect' });
+    }
   }
 }
 
@@ -239,11 +535,8 @@ app.prepare().then(() => {
   expressApp.use(express.json({ limit: '50mb' }));
   expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
   expressApp.use(cookieParser());
-
-  // Serve media files
   expressApp.use('/media', express.static(mediaDir));
 
-  // Auth Middleware
   const authenticate = (req: any, res: any, next: any) => {
     const token = req.cookies.token;
     if (!token) return res.status(401).json({ error: 'Não autorizado' });
@@ -256,224 +549,127 @@ app.prepare().then(() => {
     }
   };
 
-  // Auth Routes
   expressApp.post('/api/auth/login', (req, res) => {
     const { email, password } = req.body;
     const user = users.find(u => u.email === email);
-    if (!user || !bcrypt.compareSync(password, user.password)) {
-      return res.status(401).json({ error: 'Credenciais inválidas' });
-    }
+    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
     res.cookie('token', token, { httpOnly: true, secure: !dev, sameSite: 'lax' });
     res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
   });
 
-  expressApp.get('/api/auth/me', authenticate, (req: any, res) => {
-    res.json(req.user);
+  expressApp.get('/api/auth/me', authenticate, (req: any, res) => res.json(req.user));
+  expressApp.post('/api/auth/logout', (req, res) => { res.clearCookie('token'); res.json({ success: true }); });
+
+  expressApp.get('/api/connections', authenticate, (req: any, res) => {
+    res.json(Object.values(sessions).map(s => ({ id: s.id, status: s.status, qrCode: s.qrCode, userInfo: s.userInfo })));
   });
 
-  expressApp.post('/api/auth/logout', (req, res) => {
-    res.clearCookie('token');
-    res.json({ success: true });
+  expressApp.post('/api/connections', authenticate, (req: any, res) => {
+    const sessionId = Date.now().toString();
+    connectToWhatsApp(io, sessionId);
+    res.json({ success: true, sessionId });
   });
 
-  // User Management Routes (Admin Only)
-  expressApp.get('/api/users', authenticate, (req: any, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Proibido' });
-    // Return users without passwords
-    const safeUsers = users.map(({ password, ...u }) => u);
-    res.json(safeUsers);
-  });
-
-  expressApp.post('/api/users', authenticate, (req: any, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Proibido' });
-    const { name, email, password, role } = req.body;
-    
-    if (users.find(u => u.email === email)) {
-      return res.status(400).json({ error: 'Email já existe' });
-    }
-
-    const newUser = {
-      id: Date.now().toString(),
-      name,
-      email,
-      password: bcrypt.hashSync(password, 10),
-      role: role || 'agent'
-    };
-    users.push(newUser);
-    const { password: _, ...safeUser } = newUser;
-    res.json(safeUser);
-  });
-
-  expressApp.put('/api/users/:id', authenticate, (req: any, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Proibido' });
+  expressApp.delete('/api/connections/:id', authenticate, async (req: any, res) => {
     const { id } = req.params;
-    const { name, email, password, role } = req.body;
-    
-    const userIndex = users.findIndex(u => u.id === id);
-    if (userIndex === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
-
-    if (email && email !== users[userIndex].email) {
-      if (users.find(u => u.email === email)) {
-        return res.status(400).json({ error: 'Email já existe' });
-      }
-      users[userIndex].email = email;
-    }
-
-    if (name) users[userIndex].name = name;
-    if (role) users[userIndex].role = role;
-    if (password) users[userIndex].password = bcrypt.hashSync(password, 10);
-
-    const { password: _, ...safeUser } = users[userIndex];
-    res.json(safeUser);
+    if (sessions[id]) {
+      try {
+        if (sessions[id].sock) { await sessions[id].sock.logout(); sessions[id].sock.end(undefined); }
+      } catch (e: any) { if (e?.message !== 'Intentional Logout') console.error('Error logging out', e); }
+      delete sessions[id];
+      const authPath = path.join(process.cwd(), `auth_info_baileys_${id}`);
+      if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+      io.emit('whatsapp:session-removed', { sessionId: id });
+      res.json({ success: true });
+    } else res.status(404).json({ error: 'Session not found' });
   });
 
-  expressApp.delete('/api/users/:id', authenticate, (req: any, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Proibido' });
+  expressApp.post('/api/connections/:id/repair', authenticate, async (req: any, res) => {
     const { id } = req.params;
-    const userIndex = users.findIndex(u => u.id === id);
-    if (userIndex === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
-    
-    // Prevent deleting the last admin or yourself if needed, but for now just delete
-    users.splice(userIndex, 1);
-    res.json({ success: true });
+    if (sessions[id]) {
+      console.log(`Manual repair requested for session ${id}`);
+      
+      // 1. Stop current socket
+      if (sessions[id].sock) {
+        try {
+          sessions[id].sock.end(undefined);
+        } catch (e) {}
+      }
+      
+      // 2. Clear session and sender-key folders for this specific session
+      const authPath = `auth_info_baileys_${id}`;
+      const sessionPath = path.join(process.cwd(), authPath, 'sessions');
+      const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
+      
+      if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+      if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
+      
+      // 3. Reconnect
+      setTimeout(() => {
+        connectToWhatsApp(io, id);
+      }, 1000);
+      
+      res.json({ success: true });
+    } else res.status(404).json({ error: 'Session not found' });
   });
 
-  // WhatsApp API Routes (Protected)
-  expressApp.get('/api/whatsapp/status', authenticate, (req: any, res) => {
-    // Enrich chats with assignedToName if missing (for existing data)
-    Object.values(chats).forEach((chat: any) => {
-      if (chat.assignedTo && !chat.assignedToName) {
-        const user = users.find(u => u.id === chat.assignedTo);
-        if (user) chat.assignedToName = user.name;
-      }
-    });
+  expressApp.get('/api/whatsapp/status', authenticate, async (req: any, res) => {
+    // Run a quick merge check for all chats to clean up duplicates
+    const sessionList = Object.values(sessions);
+    for (const session of sessionList) {
+        if (session.state) {
+            const chatKeys = Object.keys(chats).filter(k => k.startsWith(`${session.id}--`));
+            for (const chatKey of chatKeys) {
+                const jid = chatKey.split('--')[1];
+                await mergeChatsIfNeeded(session.id, jid, session.state, io);
+            }
+        }
+    }
 
     let filteredChats = chats;
     if (req.user.role !== 'admin') {
-      filteredChats = Object.fromEntries(
-        Object.entries(chats).filter(([_, chat]: [string, any]) => 
-          !chat.assignedTo || chat.assignedTo === req.user.id
-        )
-      );
+      filteredChats = Object.fromEntries(Object.entries(chats).filter(([_, chat]: [string, any]) => !chat.assignedTo || chat.assignedTo === req.user.id));
     }
-    res.json({ status: connectionStatus, qr: qrCode, user: userInfo, chats: filteredChats });
+    const mainSession = sessionList[0] || { status: 'disconnected', qrCode: null, userInfo: null };
+    res.json({ status: mainSession.status, qr: mainSession.qrCode, user: mainSession.userInfo, chats: filteredChats });
   });
 
   expressApp.post('/api/whatsapp/send', authenticate, async (req: any, res) => {
-    const { jid: rawJid, text, media, mediaType, fileName, mimeType } = req.body;
-    if (!sock || connectionStatus !== 'connected') {
-      return res.status(400).json({ error: 'WhatsApp não conectado' });
+    const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId } = req.body;
+    let jid = normalizeJid(rawJid);
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+        const chatKey = Object.keys(chats).find(k => k.endsWith(`--${jid}`));
+        if (chatKey) targetSessionId = chats[chatKey].sessionId;
     }
-    const jid = jidNormalizedUser(rawJid);
-    
-    // Check if chat is assigned to someone else
-    if (chats[jid] && chats[jid].assignedTo && chats[jid].assignedTo !== req.user.id) {
-      // Allow admins to send anyway, or restrict? Let's restrict for now.
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Conversa atribuída a outro agente' });
-      }
+    if (!targetSessionId) {
+        const connectedSession = Object.values(sessions).find(s => s.status === 'connected');
+        if (connectedSession) targetSessionId = connectedSession.id;
     }
-
+    const session = sessions[targetSessionId];
+    if (!session || !session.sock || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
+    const chatKey = `${targetSessionId}--${jid}`;
     try {
-      let msgPayload: any = {};
-
-      if (media && mediaType) {
-        const buffer = Buffer.from(media.split(',')[1], 'base64');
-        
-        if (mediaType === 'image') {
-          msgPayload = { 
-            image: buffer, 
-            caption: text 
-          };
-        } else if (mediaType === 'document') {
-          msgPayload = { 
-            document: buffer, 
-            mimetype: mimeType || 'application/octet-stream',
-            fileName: fileName || 'document',
-            caption: text
-          };
-        }
-      } else {
-        msgPayload = { text: text || '' };
+      let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: text, mimetype: mimeType, fileName } : { text: text || '' };
+      const sentMsg = await session.sock.sendMessage(jid, msgPayload);
+      if (chats[chatKey]) {
+        chats[chatKey].lastMessage = text || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
+        chats[chatKey].messages.push(sentMsg);
+        if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
       }
-
-      const sentMsg = await sock.sendMessage(jid, msgPayload);
-      
-      if (chats[jid]) {
-        chats[jid].lastMessage = text || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
-        chats[jid].messages.push(sentMsg);
-        if (chats[jid].messages.length > 50) chats[jid].messages.shift();
-        
-        // Auto-assign if not assigned
-        if (!chats[jid].assignedTo) {
-          chats[jid].assignedTo = req.user.id;
-          const assignedUser = users.find(u => u.id === req.user.id);
-          chats[jid].assignedToName = assignedUser?.name;
-          io.emit('whatsapp:chat-assigned', { jid, userId: req.user.id, userName: assignedUser?.name });
-        }
-      }
-      io.emit('whatsapp:message', sentMsg);
+      io.emit('whatsapp:message', { ...sentMsg, sessionId: targetSessionId, chatKey });
       res.json(sentMsg);
-    } catch (err) {
-      console.error('Send error:', err);
-      res.status(500).json({ error: 'Falha ao enviar mensagem' });
-    }
+    } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
   });
 
-  expressApp.post('/api/whatsapp/chats/:jid/assign', authenticate, (req: any, res) => {
-    const { jid } = req.params;
-    const normalizedJid = jidNormalizedUser(jid);
-    if (chats[normalizedJid]) {
-      chats[normalizedJid].assignedTo = req.user.id;
-      const assignedUser = users.find(u => u.id === req.user.id);
-      chats[normalizedJid].assignedToName = assignedUser?.name;
-      io.emit('whatsapp:chat-assigned', { jid: normalizedJid, userId: req.user.id, userName: assignedUser?.name });
-      return res.json({ success: true });
-    }
-    res.status(404).json({ error: 'Conversa não encontrada' });
-  });
-
-  expressApp.delete('/api/whatsapp/chats/:jid', authenticate, (req, res) => {
-    const { jid } = req.params;
-    const normalizedJid = jidNormalizedUser(jid);
-    if (chats[normalizedJid]) {
-      delete chats[normalizedJid];
-      io.emit('whatsapp:chat-deleted', { jid: normalizedJid });
-      return res.json({ success: true });
-    }
-    res.status(404).json({ error: 'Conversa não encontrada' });
-  });
-
-  expressApp.get('/api/whatsapp/logout', async (req, res) => {
-    try {
-      if (sock) {
-        await sock.logout();
-        sock.end(undefined);
-        sock = null;
-      }
-      const authPath = path.join(process.cwd(), 'auth_info_baileys');
-      if (fs.existsSync(authPath)) {
-        fs.rmSync(authPath, { recursive: true, force: true });
-      }
-      connectionStatus = 'disconnected';
-      qrCode = null;
-      userInfo = null;
-      Object.keys(chats).forEach(key => delete chats[key]);
-      io.emit('whatsapp:status', { status: 'disconnected' });
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Falha ao sair' });
-    }
-  });
-
-  expressApp.all(/.*/, (req, res) => {
-    const parsedUrl = parse(req.url!, true);
-    handle(req, res, parsedUrl);
-  });
+  expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
 
   server.listen(port, () => {
     console.log(`> Ready on http://localhost:${port}`);
-    connectToWhatsApp(io);
+    const files = fs.readdirSync(process.cwd());
+    const authFolders = files.filter(f => f.startsWith('auth_info_baileys_'));
+    if (authFolders.length === 0) connectToWhatsApp(io, 'default');
+    else authFolders.forEach(folder => connectToWhatsApp(io, folder.replace('auth_info_baileys_', '')));
   });
 });

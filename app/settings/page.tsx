@@ -1,58 +1,99 @@
 'use client';
 
 import React from 'react';
+import { 
+  Settings as SettingsIcon, 
+  Bell, 
+  Lock, 
+  User, 
+  Globe, 
+  Smartphone,
+  MessageSquare,
+  Save
+} from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
-import { Settings as SettingsIcon, Bell, Shield, User } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export default function SettingsPage() {
   return (
-    <div className="flex h-screen bg-zinc-50">
+    <div className="flex h-screen bg-zinc-50 overflow-hidden">
       <Sidebar />
-      <main className="flex-1 p-8">
-        <div className="max-w-3xl mx-auto">
-          <header className="mb-8">
-            <h1 className="text-3xl font-bold text-zinc-900">Settings</h1>
-            <p className="text-zinc-500">Configure your application preferences.</p>
-          </header>
+      
+      <div className="flex-1 flex flex-col overflow-y-auto">
+        <div className="p-8 max-w-4xl">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-zinc-900">Configurações</h1>
+            <p className="text-zinc-500 mt-1">Personalize sua experiência e gerencie sua conta</p>
+          </div>
 
           <div className="space-y-6">
-            <section className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-zinc-100 flex items-center gap-3">
-                <User className="w-5 h-5 text-zinc-400" />
-                <h2 className="font-bold text-zinc-900">Profile Settings</h2>
+            <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-zinc-50">
+                <h2 className="font-bold text-zinc-900 flex items-center gap-2">
+                  <User className="w-5 h-5 text-emerald-600" />
+                  Perfil do Agente
+                </h2>
               </div>
-              <div className="p-6 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-zinc-700 mb-1">Display Name</label>
-                  <input type="text" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" defaultValue="Admin User" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-zinc-700 mb-1">Email Address</label>
-                  <input type="email" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" defaultValue="admin@example.com" />
-                </div>
-              </div>
-            </section>
-
-            <section className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-zinc-100 flex items-center gap-3">
-                <Bell className="w-5 h-5 text-zinc-400" />
-                <h2 className="font-bold text-zinc-900">Notifications</h2>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="flex items-center justify-between">
+              <div className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <div className="font-medium text-zinc-900">Push Notifications</div>
-                    <div className="text-sm text-zinc-500">Receive alerts for new messages</div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-2">Nome de Exibição</label>
+                    <input type="text" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" placeholder="Seu nome" />
                   </div>
-                  <div className="w-12 h-6 bg-emerald-500 rounded-full relative cursor-pointer">
-                    <div className="absolute right-1 top-1 w-4 h-4 bg-white rounded-full shadow-sm" />
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-2">E-mail</label>
+                    <input type="email" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" placeholder="seu@email.com" disabled />
                   </div>
                 </div>
               </div>
-            </section>
+            </div>
+
+            <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-zinc-50">
+                <h2 className="font-bold text-zinc-900 flex items-center gap-2">
+                  <MessageSquare className="w-5 h-5 text-emerald-600" />
+                  Preferências de Chat
+                </h2>
+              </div>
+              <div className="p-6 space-y-4">
+                {[
+                  { icon: Bell, label: 'Notificações Sonoras', desc: 'Tocar som ao receber novas mensagens', active: true },
+                  { icon: Smartphone, label: 'Notificações Push', desc: 'Receber alertas no navegador', active: true },
+                  { icon: Globe, label: 'Auto-atribuição', desc: 'Atribuir conversas novas automaticamente', active: false },
+                ].map((item, i) => (
+                  <div key={i} className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-zinc-50 rounded-xl flex items-center justify-center text-zinc-400">
+                        <item.icon className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-zinc-900">{item.label}</p>
+                        <p className="text-xs text-zinc-500">{item.desc}</p>
+                      </div>
+                    </div>
+                    <button className={cn(
+                      "w-12 h-6 rounded-full transition-all relative",
+                      item.active ? "bg-emerald-600" : "bg-zinc-200"
+                    )}>
+                      <div className={cn(
+                        "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
+                        item.active ? "right-1" : "left-1"
+                      )} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button className="flex items-center gap-2 bg-emerald-600 text-white px-8 py-3 rounded-xl font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20">
+                <Save className="w-5 h-5" />
+                Salvar Alterações
+              </button>
+            </div>
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }

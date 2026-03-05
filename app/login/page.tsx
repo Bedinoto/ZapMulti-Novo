@@ -2,8 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MessageSquare, Lock, Mail, Loader2 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { MessageSquare, Mail, Lock, ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -14,8 +13,8 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
     setLoading(true);
+    setError('');
 
     try {
       const res = await fetch('/api/auth/login', {
@@ -25,50 +24,40 @@ export default function LoginPage() {
       });
 
       if (res.ok) {
-        router.push('/');
+        router.push('/chats');
       } else {
         const data = await res.json();
         setError(data.error || 'Falha no login');
       }
     } catch (err) {
-      setError('Ocorreu um erro. Por favor, tente novamente.');
+      setError('Erro ao conectar ao servidor');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full bg-white rounded-3xl shadow-xl border border-zinc-200 overflow-hidden"
-      >
-        <div className="p-8">
-          <div className="flex flex-col items-center mb-8">
-            <div className="bg-emerald-50 p-4 rounded-2xl mb-4">
-              <MessageSquare className="w-10 h-10 text-emerald-600" />
-            </div>
-            <h1 className="text-2xl font-bold text-zinc-900">Bem-vindo de volta</h1>
-            <p className="text-zinc-500 text-sm">Faça login para gerenciar suas conversas do WhatsApp</p>
+    <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-10">
+          <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-emerald-600/20">
+            <MessageSquare className="w-8 h-8" />
           </div>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo de volta</h1>
+          <p className="text-zinc-500 mt-2">Acesse sua conta para gerenciar suas conversas</p>
+        </div>
 
-          {error && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 text-sm rounded-xl">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleLogin} className="space-y-4">
+        <div className="bg-white p-8 rounded-3xl shadow-xl shadow-zinc-200/50 border border-zinc-100">
+          <form onSubmit={handleLogin} className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">Endereço de Email</label>
+              <label className="block text-sm font-medium text-zinc-700 mb-2">E-mail</label>
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400" />
                 <input
                   type="email"
                   required
-                  className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                  placeholder="admin@example.com"
+                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="seu@email.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                 />
@@ -76,13 +65,13 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">Senha</label>
+              <label className="block text-sm font-medium text-zinc-700 mb-2">Senha</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400" />
                 <input
                   type="password"
                   required
-                  className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -90,30 +79,23 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {error && (
+              <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm">
+                {error}
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold hover:bg-emerald-700 focus:ring-4 focus:ring-emerald-500/20 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Entrando...
-                </>
-              ) : (
-                'Entrar'
-              )}
+              {loading ? 'Entrando...' : 'Entrar na conta'}
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
           </form>
-
-          <div className="mt-8 pt-8 border-t border-zinc-100 text-center">
-            <p className="text-xs text-zinc-400">
-              Credenciais padrão:<br />
-              admin@example.com / admin123
-            </p>
-          </div>
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }
