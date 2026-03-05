@@ -1,0 +1,5 @@
+{
+  "name": "OmniChat WhatsApp",
+  "description": "Plataforma de multi-atendimento para WhatsApp utilizando a API Baileys.",
+  "requestFramePermissions": []
+}
