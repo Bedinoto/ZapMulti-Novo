@@ -44,7 +44,7 @@ export default function ConnectionsPage() {
 
   useEffect(() => {
     fetchSessions();
-    const newSocket = io();
+    const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
 
     newSocket.on('whatsapp:session-status', (data: any) => {

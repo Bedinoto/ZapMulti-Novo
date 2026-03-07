@@ -119,7 +119,7 @@ export default function ChatsPage() {
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
 
   useEffect(() => {
-    const newSocket = io();
+    const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
     fetch('/api/whatsapp/status').then(res => res.json()).then(data => { if (data.chats) setChats(data.chats); });
     fetch('/api/auth/me').then(res => res.json()).then(data => setCurrentUser(data));

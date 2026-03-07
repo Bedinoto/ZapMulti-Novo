@@ -812,7 +812,16 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 app.prepare().then(async () => {
   const expressApp = express();
   const server = createServer(expressApp);
-  const io = new Server(server);
+  const io = new Server(server, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"],
+      credentials: true
+    },
+    allowEIO3: true,
+    pingTimeout: 60000,
+    pingInterval: 25000
+  });
 
   await syncFromDb();
 
@@ -1104,8 +1113,8 @@ app.prepare().then(async () => {
 
   expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
 
-  server.listen(port, () => {
-    console.log(`> Ready on http://localhost:${port}`);
+  server.listen(port, hostname, () => {
+    console.log(`> Ready on http://${hostname}:${port}`);
     const files = fs.readdirSync(process.cwd());
     const authFolders = files.filter(f => f.startsWith('auth_info_baileys_'));
     if (authFolders.length === 0) connectToWhatsApp(io, 'default');

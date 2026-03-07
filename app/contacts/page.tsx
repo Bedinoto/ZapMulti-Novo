@@ -47,7 +47,7 @@ export default function ContactsPage() {
 
   useEffect(() => {
     fetchContacts();
-    const socket = io();
+    const socket = io({ transports: ['polling', 'websocket'] });
 
     socket.on('whatsapp:contact-new', (contact: Contact) => {
       setContacts(prev => [contact, ...prev]);
