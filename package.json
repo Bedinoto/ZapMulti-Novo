@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@prisma/client": "^7.4.2",
+    "@prisma/client": "^6.2.1",
     "@whiskeysockets/baileys": "^6.7.9",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
@@ -25,7 +25,7 @@
     "motion": "^11.11.11",
     "next": "15.0.2",
     "pino": "^9.5.0",
-    "prisma": "^7.4.2",
+    "prisma": "^6.2.1",
     "qrcode": "^1.5.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
