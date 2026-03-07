@@ -1243,7 +1243,7 @@ app.prepare().then(async () => {
     if (!session || !session.sock || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
     const chatKey = `${targetSessionId}--${jid}`;
     const userName = req.user.name || 'Atendente';
-    const finalMessage = text ? `*${userName}*: ${text}` : '';
+    const finalMessage = text ? `*${userName}*\n${text}` : '';
 
     try {
       let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
