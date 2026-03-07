@@ -18,6 +18,7 @@ import QRCode from 'qrcode';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { prisma } from './lib/prisma';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const dev = process.env.NODE_ENV !== 'production';
@@ -29,94 +30,164 @@ const nextApp = (next as any).default || next;
 const app = nextApp({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
+// Global error handlers to prevent crashes on EPIPE or other unexpected errors
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 function normalizeJid(rawJid: string): string {
     if (!rawJid) return '';
     let jid = jidNormalizedUser(rawJid);
     if (jid.endsWith('@c.us')) jid = jid.replace('@c.us', '@s.whatsapp.net');
-    if (jid.endsWith('@lid')) jid = jid.replace('@lid', '@s.whatsapp.net');
     return jid;
+}
+
+function getPhoneNumberFromJid(jid: string): string {
+    if (jid && jid.endsWith('@s.whatsapp.net')) {
+        return jid.split('@')[0];
+    }
+    return '';
+}
+
+async function resolvePn(jid: string, state: any): Promise<string | null> {
+    if (!jid || !jid.endsWith('@lid')) return null;
+    try {
+        const mapping = await state.keys.get('lid-mapping', [jid]);
+        if (mapping && mapping[jid]) {
+            const data = mapping[jid];
+            const pn = typeof data === 'string' ? data : (data as any)?.pn;
+            return pn ? jidNormalizedUser(pn) : null;
+        }
+    } catch (e) {
+        console.error('Error resolving PN:', e);
+    }
+    return null;
 }
 
 async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io: Server) {
     if (!jid) return;
     
-    // Ensure we have the @s.whatsapp.net version for our internal storage keys
-    const normalizedJid = normalizeJid(jid);
-    
-    // But for lid-mapping lookup, we might need the @lid version if it's an LID
-    // Baileys usually stores them with their native domain in the key-value store
-    const lidJid = jid.includes('@') ? (jid.split('@')[0] + '@lid') : (jid + '@lid');
-    const pnJidNative = jid.includes('@') ? (jid.split('@')[0] + '@s.whatsapp.net') : (jid + '@s.whatsapp.net');
-
     try {
-        // Try looking up by the jid as provided, and also by its LID/PN variants
-        const lookups = [jid, lidJid, pnJidNative];
-        const mappings = await state.keys.get('lid-mapping', lookups);
+        // Baileys stores mappings both ways: PN -> LID and LID -> PN
+        // We look up the provided JID to see if it has a corresponding other ID
+        const mappings = await state.keys.get('lid-mapping', [jid]);
         
-        if (mappings) {
-            for (const [key, value] of Object.entries(mappings)) {
-                if (!value) continue;
+        if (mappings && mappings[jid]) {
+            const value = mappings[jid];
+            const otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
+            if (!otherJidRaw) return;
+
+            const jid1 = normalizeJid(jid);
+            const jid2 = normalizeJid(otherJidRaw);
+            
+            const chatKey1 = `${sessionId}--${jid1}`;
+            const chatKey2 = `${sessionId}--${jid2}`;
+            
+            if (chatKey1 === chatKey2) return;
+
+            // Determine which one is LID and which is PN
+            const isJid1Lid = jid1.includes('@lid');
+            const lidKey = isJid1Lid ? chatKey1 : chatKey2;
+            const pnKey = isJid1Lid ? chatKey2 : chatKey1;
+            const lidJid = isJid1Lid ? jid1 : jid2;
+            const pnJid = isJid1Lid ? jid2 : jid1;
+
+            // Case 1: Both chats exist, merge them
+            if (chats[lidKey] && chats[pnKey]) {
+                console.log(`Merging LID chat ${lidKey} into PN chat ${pnKey}`);
                 
-                const otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
-                if (!otherJidRaw) continue;
-
-                const jid1 = normalizeJid(key);
-                const jid2 = normalizeJid(otherJidRaw);
+                // Merge messages
+                const mergedMessages = [
+                    ...chats[pnKey].messages,
+                    ...chats[lidKey].messages
+                ].sort((a, b) => (a.messageTimestamp as number) - (b.messageTimestamp as number));
                 
-                const chatKey1 = `${sessionId}--${jid1}`;
-                const chatKey2 = `${sessionId}--${jid2}`;
+                // Deduplicate
+                const seen = new Set();
+                chats[pnKey].messages = mergedMessages.filter((m: any) => {
+                    if (seen.has(m.key.id)) return false;
+                    seen.add(m.key.id);
+                    return true;
+                });
+
+                // Update last message and timestamp if LID has newer info
+                if (chats[lidKey].timestamp > chats[pnKey].timestamp) {
+                    chats[pnKey].timestamp = chats[lidKey].timestamp;
+                    chats[pnKey].lastMessage = chats[lidKey].lastMessage;
+                }
+
+                // Delete the LID chat and notify clients
+                delete chats[lidKey];
                 
-                if (chatKey1 === chatKey2) continue;
+                // DB Update
+                await prisma.chat.deleteMany({ where: { id: lidKey } });
+                await prisma.message.updateMany({
+                    where: { chatId: lidKey },
+                    data: { chatId: pnKey }
+                });
 
-                // We have two different keys that represent the same person
-                if (chats[chatKey1] && chats[chatKey2]) {
-                    console.log(`Merging chats: ${chatKey1} and ${chatKey2}`);
-                    // Merge into the one that is NOT an LID if possible, or just the first one
-                    // Usually the one with more messages or the one that is a PN
-                    const isJid1Lid = key.includes('@lid');
-                    const sourceKey = isJid1Lid ? chatKey1 : chatKey2;
-                    const targetKey = isJid1Lid ? chatKey2 : chatKey1;
-                    const sourceJid = isJid1Lid ? jid1 : jid2;
+                io.emit('whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
+                io.emit('whatsapp:chat-updated', chats[pnKey]);
+            } 
+            // Case 2: Only LID chat exists, rename it to PN
+            else if (chats[lidKey] && !chats[pnKey]) {
+                console.log(`Renaming LID chat ${lidKey} to PN chat ${pnKey}`);
+                chats[pnKey] = { ...chats[lidKey], id: pnJid, key: pnKey };
+                delete chats[lidKey];
 
-                    console.log(`Source: ${sourceKey}, Target: ${targetKey}`);
+                // DB Update
+                await prisma.chat.update({
+                    where: { id: lidKey },
+                    data: { id: pnKey, jid: pnJid }
+                });
 
-                    // Merge messages
-                    const mergedMessages = [
-                        ...chats[targetKey].messages,
-                        ...chats[sourceKey].messages
-                    ].sort((a, b) => (a.messageTimestamp as number) - (b.messageTimestamp as number));
-                    
-                    // Deduplicate
-                    const seen = new Set();
-                    chats[targetKey].messages = mergedMessages.filter((m: any) => {
-                        if (seen.has(m.key.id)) return false;
-                        seen.add(m.key.id);
-                        return true;
-                    });
+                io.emit('whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
+                io.emit('whatsapp:chat-updated', chats[pnKey]);
+            }
 
-                    // Update last message and timestamp
-                    if (chats[sourceKey].timestamp > chats[targetKey].timestamp) {
-                        chats[targetKey].timestamp = chats[sourceKey].timestamp;
-                        chats[targetKey].lastMessage = chats[sourceKey].lastMessage;
-                    }
-
-                    delete chats[sourceKey];
-                    io.emit('whatsapp:chat-deleted', { jid: sourceJid, chatKey: sourceKey });
-                    io.emit('whatsapp:chat-updated', chats[targetKey]);
-                    return; // Done merging
-                } else if (chats[chatKey1] && !chats[chatKey2]) {
-                    // If we only have the LID chat, we should probably rename it to PN chat if we know the PN
-                    // but wait, if we only have one, it's fine. The issue is when we have TWO.
-                    // However, renaming LID to PN helps prevent the "second" one from being created as PN later.
-                    const isJid1Lid = key.includes('@lid');
-                    if (isJid1Lid) {
-                        chats[chatKey2] = { ...chats[chatKey1], id: jid2, key: chatKey2 };
-                        delete chats[chatKey1];
-                        io.emit('whatsapp:chat-deleted', { jid: jid1, chatKey: chatKey1 });
-                        io.emit('whatsapp:chat-updated', chats[chatKey2]);
-                        return;
+            // --- Contact Merging ---
+            if (contacts[lidJid] && contacts[pnJid]) {
+                console.log(`Merging LID contact ${lidJid} into PN contact ${pnJid}`);
+                if (contacts[lidJid].lastInteraction > contacts[pnJid].lastInteraction) {
+                    contacts[pnJid].lastInteraction = contacts[lidJid].lastInteraction;
+                }
+                // Keep the best name
+                if (contacts[lidJid].name && contacts[lidJid].name !== lidJid.split('@')[0]) {
+                    if (!contacts[pnJid].name || contacts[pnJid].name === pnJid.split('@')[0]) {
+                        contacts[pnJid].name = contacts[lidJid].name;
                     }
                 }
+                delete contacts[lidJid];
+
+                // DB Update
+                await prisma.contact.delete({ where: { id: lidJid } });
+                await prisma.contact.update({
+                    where: { id: pnJid },
+                    data: {
+                        name: contacts[pnJid].name,
+                        lastInteraction: new Date(contacts[pnJid].lastInteraction)
+                    }
+                });
+
+                io.emit('whatsapp:contact-deleted', { jid: lidJid });
+                io.emit('whatsapp:contact-updated', contacts[pnJid]);
+            } else if (contacts[lidJid] && !contacts[pnJid]) {
+                console.log(`Renaming LID contact ${lidJid} to PN contact ${pnJid}`);
+                contacts[pnJid] = { ...contacts[lidJid], id: pnJid, phoneNumber: pnJid.split('@')[0] };
+                delete contacts[lidJid];
+
+                // DB Update
+                await prisma.contact.update({
+                    where: { id: lidJid },
+                    data: { id: pnJid, phoneNumber: pnJid.split('@')[0] }
+                });
+
+                io.emit('whatsapp:contact-deleted', { jid: lidJid });
+                io.emit('whatsapp:contact-new', contacts[pnJid]);
             }
         }
     } catch (e) {
@@ -158,16 +229,53 @@ interface Session {
 
 const sessions: Record<string, Session> = {};
 const chats: Record<string, any> = {};
+const contacts: Record<string, any> = {};
+
+async function syncFromDb() {
+    console.log('Syncing data from database...');
+    try {
+        const dbContacts = await prisma.contact.findMany();
+        for (const c of dbContacts) {
+            contacts[c.id] = {
+                ...c,
+                lastInteraction: c.lastInteraction.getTime()
+            };
+        }
+
+        const dbChats = await prisma.chat.findMany({
+            include: {
+                messages: {
+                    orderBy: { messageTimestamp: 'asc' },
+                    take: 50
+                }
+            }
+        });
+        for (const c of dbChats) {
+            const chatKey = c.id;
+            chats[chatKey] = {
+                id: c.jid,
+                key: chatKey,
+                name: c.name,
+                unreadCount: c.unreadCount,
+                timestamp: c.timestamp.getTime(),
+                messages: c.messages.map(m => ({
+                    key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe },
+                    message: m.text ? { conversation: m.text } : {},
+                    messageTimestamp: m.messageTimestamp,
+                    status: m.status
+                }))
+            };
+        }
+        console.log(`Synced ${dbContacts.length} contacts and ${dbChats.length} chats.`);
+    } catch (e) {
+        console.error('Failed to sync from DB:', e);
+    }
+}
 
 const mediaDir = path.join(process.cwd(), 'public', 'media');
 if (!fs.existsSync(mediaDir)) {
   fs.mkdirSync(mediaDir, { recursive: true });
 }
-
-const users: any[] = [
-  { id: '1', name: 'Admin', email: 'admin@example.com', password: bcrypt.hashSync('admin123', 10), role: 'admin' },
-  { id: '2', name: 'Agent 1', email: 'agent1@example.com', password: bcrypt.hashSync('agent123', 10), role: 'agent' },
-];
 
 async function connectToWhatsApp(io: Server, sessionId: string) {
   if (!sessions[sessionId]) {
@@ -264,7 +372,9 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
       if (connection === 'close') {
         const error = lastDisconnect?.error;
         const statusCode = (error as Boom)?.output?.statusCode;
-        const isLoggedOut = statusCode === DisconnectReason.loggedOut || error?.message === 'Intentional Logout';
+        const errorMessage = (error as any)?.message || '';
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut || errorMessage === 'Intentional Logout';
+        const isQrExpired = errorMessage.includes('QR refs attempts ended');
         const shouldReconnect = !isLoggedOut;
         
         if (isLoggedOut) {
@@ -273,8 +383,14 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                 sessions[sessionId].status = 'disconnected';
                 io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
             }
+        } else if (isQrExpired) {
+            console.log(`Session ${sessionId} QR code expired (attempts ended)`);
+            if (sessions[sessionId]) {
+                sessions[sessionId].status = 'disconnected';
+                sessions[sessionId].qrCode = null;
+                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
+            }
         } else {
-            const errorMessage = (error as any)?.message || '';
             const isStreamError = errorMessage.includes('Stream Errored');
             const isBadMac = errorMessage.toLowerCase().includes('bad mac');
 
@@ -401,8 +517,63 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
         }
     });
 
-    sock.ev.on('contacts.upsert', async (contacts) => {
-        for (const contact of contacts) {
+    sock.ev.on('contacts.upsert', async (newContacts) => {
+        for (const contact of newContacts) {
+            let jid = normalizeJid(contact.id);
+            if (jid && !jid.includes('@g.us')) {
+                let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
+                
+                // Try to resolve PN for LID contacts
+                if (jid.endsWith('@lid')) {
+                    const resolvedPn = await resolvePn(jid, state);
+                    if (resolvedPn) pnJid = normalizeJid(resolvedPn);
+                }
+
+                const targetJid = pnJid || jid;
+                const phoneNumber = getPhoneNumberFromJid(pnJid || '');
+
+                if (!contacts[targetJid]) {
+                    contacts[targetJid] = {
+                        id: targetJid,
+                        name: contact.name || contact.notify || contact.verifiedName || (phoneNumber || targetJid.split('@')[0]),
+                        phoneNumber: phoneNumber,
+                        lastInteraction: Date.now(),
+                        source: 'automatic'
+                    };
+                    
+                    // DB Save
+                    await prisma.contact.upsert({
+                        where: { id: targetJid },
+                        update: {
+                            name: contacts[targetJid].name,
+                            phoneNumber: phoneNumber,
+                            lastInteraction: new Date()
+                        },
+                        create: {
+                            id: targetJid,
+                            name: contacts[targetJid].name,
+                            phoneNumber: phoneNumber,
+                            lastInteraction: new Date(),
+                            source: 'automatic'
+                        }
+                    });
+
+                    io.emit('whatsapp:contact-new', contacts[targetJid]);
+                } else {
+                    // Update existing contact if we found a phone number now
+                    if (phoneNumber && !contacts[targetJid].phoneNumber) {
+                        contacts[targetJid].phoneNumber = phoneNumber;
+                        
+                        // DB Update
+                        await prisma.contact.update({
+                            where: { id: targetJid },
+                            data: { phoneNumber: phoneNumber }
+                        });
+
+                        io.emit('whatsapp:contact-updated', contacts[targetJid]);
+                    }
+                }
+            }
             if (contact.id) {
                 await mergeChatsIfNeeded(sessionId, contact.id, state, io);
             }
@@ -411,6 +582,28 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 
     sock.ev.on('contacts.update', async (updates) => {
         for (const update of updates) {
+            let jid = normalizeJid(update.id);
+            
+            // Try to resolve PN for LID contacts to find the correct contact to update
+            if (jid.endsWith('@lid')) {
+                try {
+                    const mapping = await state.keys.get('lid-mapping', [jid]);
+                    if (mapping && mapping[jid]) {
+                        const data = mapping[jid];
+                        const pn = typeof data === 'string' ? data : (data as any)?.pn;
+                        if (pn) jid = normalizeJid(pn);
+                    }
+                } catch (e) {
+                    console.error('LID resolution failed in contacts.update', e);
+                }
+            }
+
+            if (jid && contacts[jid]) {
+                if (update.name || update.notify || update.verifiedName) {
+                    contacts[jid].name = update.name || update.notify || update.verifiedName || contacts[jid].name;
+                    io.emit('whatsapp:contact-updated', contacts[jid]);
+                }
+            }
             if (update.id) {
                 await mergeChatsIfNeeded(sessionId, update.id, state, io);
             }
@@ -448,23 +641,91 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
           if (!rawJid) continue;
           
           let jid = jidNormalizedUser(rawJid);
+          let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
 
           if (jid.endsWith('@lid')) {
-            try {
-                const mapping = await state.keys.get('lid-mapping', [jid]);
-                if (mapping && mapping[jid]) {
-                    const data = mapping[jid];
-                    let pn = typeof data === 'string' ? data : (data as any)?.pn;
-                    if (pn) jid = jidNormalizedUser(pn);
+            const resolvedPn = await resolvePn(jid, state);
+            if (resolvedPn) pnJid = jidNormalizedUser(resolvedPn);
+          }
+
+          const targetJid = normalizeJid(pnJid || jid);
+          const phoneNumber = getPhoneNumberFromJid(pnJid || '');
+
+          // Automatic contact saving
+          if (targetJid && !targetJid.includes('@g.us')) {
+            if (!contacts[targetJid]) {
+                contacts[targetJid] = {
+                    id: targetJid,
+                    name: msg.pushName || (phoneNumber || targetJid.split('@')[0]),
+                    phoneNumber: phoneNumber,
+                    lastInteraction: Date.now(),
+                    source: 'automatic'
+                };
+
+                // DB Save
+                await prisma.contact.upsert({
+                    where: { id: targetJid },
+                    update: {
+                        name: contacts[targetJid].name,
+                        phoneNumber: phoneNumber,
+                        lastInteraction: new Date()
+                    },
+                    create: {
+                        id: targetJid,
+                        name: contacts[targetJid].name,
+                        phoneNumber: phoneNumber,
+                        lastInteraction: new Date(),
+                        source: 'automatic'
+                    }
+                });
+
+                io.emit('whatsapp:contact-new', contacts[targetJid]);
+            } else {
+                contacts[targetJid].lastInteraction = Date.now();
+                let needsUpdate = false;
+                if (phoneNumber && !contacts[targetJid].phoneNumber) {
+                    contacts[targetJid].phoneNumber = phoneNumber;
+                    needsUpdate = true;
                 }
-            } catch (e) {
-                console.error('LID resolution failed in messages.upsert', e);
+                if (msg.pushName && (contacts[targetJid].name === targetJid.split('@')[0] || !contacts[targetJid].name)) {
+                    contacts[targetJid].name = msg.pushName;
+                    needsUpdate = true;
+                }
+
+                // DB Update
+                await prisma.contact.update({
+                    where: { id: targetJid },
+                    data: {
+                        lastInteraction: new Date(),
+                        ...(needsUpdate ? {
+                            name: contacts[targetJid].name,
+                            phoneNumber: contacts[targetJid].phoneNumber
+                        } : {})
+                    }
+                });
+
+                io.emit('whatsapp:contact-updated', contacts[targetJid]);
             }
           }
 
-          jid = normalizeJid(jid);
+          const chatKey = `${sessionId}--${targetJid}`;
+          
+          // DB Chat Upsert
+          await prisma.chat.upsert({
+              where: { id: chatKey },
+              update: {
+                  timestamp: new Date(),
+                  name: contacts[targetJid]?.name || targetJid.split('@')[0]
+              },
+              create: {
+                  id: chatKey,
+                  sessionId,
+                  jid: targetJid,
+                  name: contacts[targetJid]?.name || targetJid.split('@')[0],
+                  timestamp: new Date()
+              }
+          });
 
-          const chatKey = `${sessionId}--${jid}`;
           const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
                        (msg.message?.imageMessage ? '📷 Foto' : '') ||
                        (msg.message?.videoMessage ? '🎥 Vídeo' : '') ||
@@ -500,7 +761,9 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
               name: msg.pushName || jid.split('@')[0],
               timestamp: (msg.messageTimestamp as number) || Date.now() / 1000,
               unreadCount: 0,
-              messages: []
+              messages: [],
+              assignedTo: null,
+              assignedToName: null
             };
           }
 
@@ -511,6 +774,25 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
           if (!msgExists) {
             chats[chatKey].messages.push(msg);
             if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
+
+            // DB Message Save
+            await prisma.message.upsert({
+                where: { id: msg.key.id! },
+                update: { status: msg.status || 0 },
+                create: {
+                    id: msg.key.id!,
+                    chatId: chatKey,
+                    jid: targetJid,
+                    fromMe: msg.key.fromMe || false,
+                    text: text,
+                    messageTimestamp: msg.messageTimestamp as number,
+                    timestamp: new Date((msg.messageTimestamp as number) * 1000),
+                    status: msg.status || 0,
+                    mediaUrl: msg.mediaUrl,
+                    mediaType: msg.mediaType,
+                    fileName: msg.fileName
+                }
+            });
           }
 
           io.emit('whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
@@ -527,10 +809,12 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
   }
 }
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
   const expressApp = express();
   const server = createServer(expressApp);
   const io = new Server(server);
+
+  await syncFromDb();
 
   expressApp.use(express.json({ limit: '50mb' }));
   expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -549,9 +833,14 @@ app.prepare().then(() => {
     }
   };
 
-  expressApp.post('/api/auth/login', (req, res) => {
+  const isAdmin = (req: any, res: any, next: any) => {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
+    next();
+  };
+
+  expressApp.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
-    const user = users.find(u => u.email === email);
+    const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
     res.cookie('token', token, { httpOnly: true, secure: !dev, sameSite: 'lax' });
@@ -561,8 +850,158 @@ app.prepare().then(() => {
   expressApp.get('/api/auth/me', authenticate, (req: any, res) => res.json(req.user));
   expressApp.post('/api/auth/logout', (req, res) => { res.clearCookie('token'); res.json({ success: true }); });
 
+  // User Management
+  expressApp.get('/api/users', authenticate, isAdmin, async (req, res) => {
+    const dbUsers = await prisma.user.findMany({
+        select: { id: true, name: true, email: true, role: true, createdAt: true }
+    });
+    res.json(dbUsers);
+  });
+
+  expressApp.post('/api/users', authenticate, isAdmin, async (req, res) => {
+    const { name, email, password, role } = req.body;
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) return res.status(400).json({ error: 'E-mail já cadastrado' });
+    
+    const newUser = await prisma.user.create({
+        data: {
+            name,
+            email,
+            password: bcrypt.hashSync(password, 10),
+            role
+        }
+    });
+    res.json({ id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role });
+  });
+
+  expressApp.put('/api/users/:id', authenticate, isAdmin, async (req, res) => {
+    const { id } = req.params;
+    const { name, email, password, role } = req.body;
+    
+    try {
+        const updatedUser = await prisma.user.update({
+            where: { id },
+            data: {
+                ...(name && { name }),
+                ...(email && { email }),
+                ...(role && { role }),
+                ...(password && { password: bcrypt.hashSync(password, 10) })
+            },
+            select: { id: true, name: true, email: true, role: true }
+        });
+        res.json(updatedUser);
+    } catch (e) {
+        res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+  });
+
+  expressApp.delete('/api/users/:id', authenticate, isAdmin, async (req, res) => {
+    const { id } = req.params;
+    if (id === (req as any).user.id) return res.status(400).json({ error: 'Você não pode excluir a si mesmo' });
+    
+    try {
+        await prisma.user.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+  });
+
   expressApp.get('/api/connections', authenticate, (req: any, res) => {
     res.json(Object.values(sessions).map(s => ({ id: s.id, status: s.status, qrCode: s.qrCode, userInfo: s.userInfo })));
+  });
+
+  expressApp.get('/api/contacts', authenticate, (req, res) => {
+    res.json(Object.values(contacts).sort((a, b) => b.lastInteraction - a.lastInteraction));
+  });
+
+  expressApp.post('/api/contacts', authenticate, async (req, res) => {
+    const { name, phoneNumber } = req.body;
+    if (!name || !phoneNumber) return res.status(400).json({ error: 'Nome e telefone são obrigatórios' });
+    
+    const cleanPhone = phoneNumber.replace(/\D/g, '');
+    const jid = `${cleanPhone}@s.whatsapp.net`;
+    
+    if (contacts[jid]) return res.status(400).json({ error: 'Contato já existe' });
+    
+    contacts[jid] = {
+      id: jid,
+      name,
+      phoneNumber: cleanPhone,
+      lastInteraction: Date.now(),
+      source: 'manual'
+    };
+
+    // DB Save
+    await prisma.contact.create({
+        data: {
+            id: jid,
+            name,
+            phoneNumber: cleanPhone,
+            lastInteraction: new Date(),
+            source: 'manual'
+        }
+    });
+    
+    io.emit('whatsapp:contact-new', contacts[jid]);
+    res.json(contacts[jid]);
+  });
+
+  expressApp.post('/api/whatsapp/chats/:chatKey/accept', authenticate, async (req: any, res) => {
+    const { chatKey } = req.params;
+    if (!chats[chatKey]) return res.status(404).json({ error: 'Conversa não encontrada' });
+    
+    chats[chatKey].assignedTo = req.user.id;
+    chats[chatKey].assignedToName = req.user.name;
+
+    // DB Update
+    await prisma.chat.update({
+        where: { id: chatKey },
+        data: {
+            assignedTo: req.user.id,
+            assignedToName: req.user.name
+        }
+    });
+    
+    io.emit('whatsapp:chat-updated', chats[chatKey]);
+    res.json(chats[chatKey]);
+  });
+
+  expressApp.post('/api/whatsapp/chats/:chatKey/reject', authenticate, async (req: any, res) => {
+    const { chatKey } = req.params;
+    if (!chats[chatKey]) return res.status(404).json({ error: 'Conversa não encontrada' });
+    
+    chats[chatKey].assignedTo = null;
+    chats[chatKey].assignedToName = null;
+
+    // DB Update
+    await prisma.chat.update({
+        where: { id: chatKey },
+        data: {
+            assignedTo: null,
+            assignedToName: null
+        }
+    });
+    
+    io.emit('whatsapp:chat-updated', chats[chatKey]);
+    res.json(chats[chatKey]);
+  });
+
+  expressApp.delete('/api/whatsapp/chats/:chatKey', authenticate, async (req: any, res) => {
+    const { chatKey } = req.params;
+    if (!chats[chatKey]) return res.status(404).json({ error: 'Conversa não encontrada' });
+    
+    if (req.user.role !== 'admin' && chats[chatKey].assignedTo !== req.user.id) {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+
+    delete chats[chatKey];
+    
+    // DB Delete
+    await prisma.chat.delete({ where: { id: chatKey } });
+
+    io.emit('whatsapp:chat-deleted', { chatKey });
+    res.json({ success: true });
   });
 
   expressApp.post('/api/connections', authenticate, (req: any, res) => {

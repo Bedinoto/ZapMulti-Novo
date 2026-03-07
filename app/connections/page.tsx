@@ -22,6 +22,7 @@ interface Session {
   status: 'connecting' | 'connected' | 'disconnected' | 'qr';
   qrCode?: string;
   userInfo?: any;
+  error?: string;
 }
 
 export default function ConnectionsPage() {
@@ -50,10 +51,10 @@ export default function ConnectionsPage() {
       setSessions(prev => {
         const index = prev.findIndex(s => s.id === data.sessionId);
         if (index === -1) {
-          return [...prev, { id: data.sessionId, status: data.status, qrCode: data.qr, userInfo: data.user }];
+          return [...prev, { id: data.sessionId, status: data.status, qrCode: data.qr, userInfo: data.user, error: data.error }];
         }
         const newSessions = [...prev];
-        newSessions[index] = { ...newSessions[index], status: data.status, qrCode: data.qr, userInfo: data.user };
+        newSessions[index] = { ...newSessions[index], status: data.status, qrCode: data.qr, userInfo: data.user, error: data.error };
         return newSessions;
       });
     });
@@ -171,6 +172,18 @@ export default function ConnectionsPage() {
                       <div className="flex flex-col items-center p-4 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
                         <img src={session.qrCode} alt="QR Code" className="w-48 h-48 mb-4" />
                         <p className="text-xs text-center text-zinc-500">Escaneie o código com seu WhatsApp para conectar</p>
+                      </div>
+                    ) : session.status === 'disconnected' && session.error === 'QR_EXPIRED' ? (
+                      <div className="p-8 flex flex-col items-center justify-center text-center bg-amber-50 rounded-2xl border border-amber-100">
+                        <AlertCircle className="w-8 h-8 mb-3 text-amber-600" />
+                        <p className="text-sm font-bold text-amber-900">QR Code Expirado</p>
+                        <p className="text-xs text-amber-700 mt-1 mb-4">O tempo para escanear o código acabou. Tente novamente.</p>
+                        <button 
+                          onClick={() => handleRepairConnection(session.id)}
+                          className="px-4 py-2 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-all"
+                        >
+                          Gerar Novo QR Code
+                        </button>
                       </div>
                     ) : session.status === 'connected' && session.userInfo ? (
                       <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100">

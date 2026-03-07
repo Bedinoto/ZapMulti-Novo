@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=whatsapp_user
+      - POSTGRES_PASSWORD=whatsapp_password
+      - POSTGRES_DB=whatsapp_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://whatsapp_user:whatsapp_password@db:5432/whatsapp_db?schema=public
+      - NODE_ENV=production
+      - JWT_SECRET=change_this_to_something_very_secure
+      - ADMIN_PASSWORD=admin123
+    depends_on:
+      - db
+    volumes:
+      - ./sessions:/app/sessions
+      - ./public/media:/app/public/media
+
+volumes:
+  postgres_data:
