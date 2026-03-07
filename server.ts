@@ -1242,11 +1242,14 @@ app.prepare().then(async () => {
     const session = sessions[targetSessionId];
     if (!session || !session.sock || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
     const chatKey = `${targetSessionId}--${jid}`;
+    const userName = req.user.name || 'Atendente';
+    const finalMessage = text ? `*${userName}*: ${text}` : '';
+
     try {
-      let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: text, mimetype: mimeType, fileName } : { text: text || '' };
+      let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
       const sentMsg = await session.sock.sendMessage(jid, msgPayload);
       if (chats[chatKey]) {
-        chats[chatKey].lastMessage = text || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
+        chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
         chats[chatKey].messages.push(sentMsg);
         if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
       }
