@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import { 
   Plus, 
@@ -12,7 +13,9 @@ import {
   X,
   CheckCircle2,
   MoreVertical,
-  MessageCircle
+  MessageCircle,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
@@ -27,11 +30,14 @@ interface Contact {
 }
 
 export default function ContactsPage() {
+  const router = useRouter();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [newContact, setNewContact] = useState({ name: '', phoneNumber: '' });
   const [loading, setLoading] = useState(true);
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
 
   const fetchContacts = async () => {
     try {
@@ -77,23 +83,70 @@ export default function ContactsPage() {
   const handleAddContact = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/contacts', {
-        method: 'POST',
+      const url = editingContact ? `/api/contacts/${editingContact.id}` : '/api/contacts';
+      const method = editingContact ? 'PUT' : 'POST';
+      
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newContact)
       });
       
       if (res.ok) {
         setIsModalOpen(false);
+        setEditingContact(null);
         setNewContact({ name: '', phoneNumber: '' });
         fetchContacts();
       } else {
         const data = await res.json();
-        alert(data.error || 'Erro ao adicionar contato');
+        alert(data.error || 'Erro ao salvar contato');
       }
     } catch (err) {
-      console.error('Failed to add contact:', err);
+      console.error('Failed to save contact:', err);
     }
+  };
+
+  const handleDeleteContact = async (id: string) => {
+    if (!confirm('Deseja realmente excluir este contato?')) return;
+    try {
+      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchContacts();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Erro ao excluir contato');
+      }
+    } catch (err) {
+      console.error('Failed to delete contact:', err);
+    }
+  };
+
+  const handleMessageContact = async (id: string) => {
+    try {
+      const res = await fetch(`/api/contacts/${id}/chat`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        router.push(`/chats?chatKey=${data.chatKey}`);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Erro ao iniciar conversa');
+      }
+    } catch (err) {
+      console.error('Failed to start chat:', err);
+    }
+  };
+
+  const openEditModal = (contact: Contact) => {
+    setEditingContact(contact);
+    setNewContact({ name: contact.name, phoneNumber: contact.phoneNumber });
+    setIsModalOpen(true);
+    setActiveDropdown(null);
+  };
+
+  const openAddModal = () => {
+    setEditingContact(null);
+    setNewContact({ name: '', phoneNumber: '' });
+    setIsModalOpen(true);
   };
 
   const filteredContacts = contacts.filter(contact => 
@@ -124,7 +177,7 @@ export default function ContactsPage() {
                 />
               </div>
               <button
-                onClick={() => setIsModalOpen(true)}
+                onClick={openAddModal}
                 className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20"
               >
                 <Plus className="w-4 h-4" />
@@ -186,13 +239,57 @@ export default function ContactsPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all">
+                        <div className="flex items-center justify-end gap-2 relative">
+                          <button 
+                            onClick={() => handleMessageContact(contact.id)}
+                            className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                            title="Enviar Mensagem"
+                          >
                             <MessageCircle className="w-4 h-4" />
                           </button>
-                          <button className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all">
-                            <MoreVertical className="w-4 h-4" />
-                          </button>
+                          <div className="relative">
+                            <button 
+                              onClick={() => setActiveDropdown(activeDropdown === contact.id ? null : contact.id)}
+                              className={cn(
+                                "p-2 rounded-lg transition-all",
+                                activeDropdown === contact.id ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100"
+                              )}
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
+                            
+                            <AnimatePresence>
+                              {activeDropdown === contact.id && (
+                                <>
+                                  <div 
+                                    className="fixed inset-0 z-10" 
+                                    onClick={() => setActiveDropdown(null)}
+                                  />
+                                  <motion.div
+                                    initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                                    className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-xl border border-zinc-100 py-2 z-20"
+                                  >
+                                    <button 
+                                      onClick={() => openEditModal(contact)}
+                                      className="w-full px-4 py-2.5 text-left text-sm text-zinc-600 hover:bg-zinc-50 flex items-center gap-3 transition-colors"
+                                    >
+                                      <Edit2 className="w-4 h-4 text-zinc-400" />
+                                      Editar Contato
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDeleteContact(contact.id)}
+                                      className="w-full px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-3 transition-colors"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-red-400" />
+                                      Excluir Contato
+                                    </button>
+                                  </motion.div>
+                                </>
+                              )}
+                            </AnimatePresence>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -231,7 +328,9 @@ export default function ContactsPage() {
               className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
             >
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-zinc-900">Novo Contato</h2>
+                <h2 className="text-xl font-bold text-zinc-900">
+                  {editingContact ? 'Editar Contato' : 'Novo Contato'}
+                </h2>
                 <button onClick={() => setIsModalOpen(false)} className="p-2 text-zinc-400 hover:text-zinc-600 rounded-xl hover:bg-zinc-50 transition-all">
                   <X className="w-5 h-5" />
                 </button>
@@ -258,8 +357,9 @@ export default function ContactsPage() {
                     <input 
                       type="text" 
                       required
+                      disabled={!!editingContact}
                       placeholder="Ex: 5511999999999" 
-                      className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                      className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                       value={newContact.phoneNumber}
                       onChange={(e) => setNewContact({ ...newContact, phoneNumber: e.target.value })}
                     />

@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import { 
   Search, Send, MoreVertical, Phone, Video, User, Check, CheckCheck, 
@@ -103,6 +104,19 @@ interface Chat {
 }
 
 export default function ChatsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-screen bg-zinc-50">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600"></div>
+      </div>
+    }>
+      <ChatContent />
+    </Suspense>
+  );
+}
+
+function ChatContent() {
+  const searchParams = useSearchParams();
   const [chats, setChats] = useState<Record<string, Chat>>({});
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
@@ -153,7 +167,14 @@ export default function ChatsPage() {
     });
 
     return () => { newSocket.close(); };
-  }, [selectedChatId]);
+  }, []);
+
+  useEffect(() => {
+    const chatKey = searchParams.get('chatKey');
+    if (chatKey) {
+      setSelectedChatId(chatKey);
+    }
+  }, [searchParams]);
 
   const filteredChats = Object.values(chats)
     .filter(chat => {

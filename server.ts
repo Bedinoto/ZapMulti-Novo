@@ -1016,6 +1016,90 @@ app.prepare().then(async () => {
     res.json(contacts[jid]);
   });
 
+  expressApp.put('/api/contacts/:id', authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
+    
+    if (!contacts[id]) return res.status(404).json({ error: 'Contato não encontrado' });
+    
+    contacts[id].name = name;
+    
+    // DB Update
+    await prisma.contact.update({
+        where: { id },
+        data: { name }
+    });
+    
+    // Update name in all chats of this contact
+    for (const chatKey in chats) {
+        if (chats[chatKey].id === id) {
+            chats[chatKey].name = name;
+            await prisma.chat.update({
+                where: { id: chatKey },
+                data: { name }
+            });
+            emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[chatKey]);
+        }
+    }
+    
+    emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[id]);
+    res.json(contacts[id]);
+  });
+
+  expressApp.delete('/api/contacts/:id', authenticate, async (req, res) => {
+    const { id } = req.params;
+    if (!contacts[id]) return res.status(404).json({ error: 'Contato não encontrado' });
+    
+    delete contacts[id];
+    
+    // DB Delete
+    await prisma.contact.delete({ where: { id } });
+    
+    emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: id });
+    res.json({ success: true });
+  });
+
+  expressApp.post('/api/contacts/:id/chat', authenticate, async (req, res) => {
+    const { id } = req.params;
+    if (!contacts[id]) return res.status(404).json({ error: 'Contato não encontrado' });
+    
+    // Find a connected session
+    const activeSession = Object.values(sessions).find(s => s.status === 'connected');
+    if (!activeSession) return res.status(400).json({ error: 'Nenhuma conexão WhatsApp ativa' });
+    
+    const chatKey = `${activeSession.id}--${id}`;
+    
+    if (!chats[chatKey]) {
+        chats[chatKey] = {
+            id: id,
+            key: chatKey,
+            sessionId: activeSession.id,
+            name: contacts[id].name,
+            unreadCount: 0,
+            timestamp: Date.now(),
+            messages: []
+        };
+        
+        // DB Save
+        await prisma.chat.upsert({
+            where: { id: chatKey },
+            update: { name: contacts[id].name },
+            create: {
+                id: chatKey,
+                sessionId: activeSession.id,
+                jid: id,
+                name: contacts[id].name,
+                timestamp: new Date()
+            }
+        });
+        
+        emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[chatKey]);
+    }
+    
+    res.json({ chatKey });
+  });
+
   expressApp.post('/api/whatsapp/chats/:chatKey/accept', authenticate, async (req: any, res) => {
     const { chatKey } = req.params;
     if (!chats[chatKey]) return res.status(404).json({ error: 'Conversa não encontrada' });
