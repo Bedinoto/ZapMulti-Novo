@@ -49,7 +49,9 @@ until npx prisma db push --accept-data-loss; do
   echo "Prisma db push failed, retrying in 5 seconds..."
   sleep 5
 done
-echo "Database ready. Starting app..."
+echo "Database ready. Running seed..."
+npm run prisma:seed
+echo "Starting app..."
 npx tsx server.ts
 EOF
 
