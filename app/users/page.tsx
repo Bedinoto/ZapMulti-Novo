@@ -35,9 +35,17 @@ export default function UsersPage() {
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/users');
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
-        setUsers(data);
+        if (Array.isArray(data)) {
+          setUsers(data);
+        } else {
+          console.error('Expected array of users, got:', data);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch users:', err);
@@ -49,8 +57,11 @@ export default function UsersPage() {
   useEffect(() => {
     fetchUsers();
     fetch('/api/auth/me')
-      .then(res => res.json())
-      .then(data => setCurrentUser(data));
+      .then(res => {
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        return res.json();
+      })
+      .then(data => { if (data) setCurrentUser(data); });
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {

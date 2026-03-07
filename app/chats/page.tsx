@@ -121,8 +121,14 @@ export default function ChatsPage() {
   useEffect(() => {
     const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
-    fetch('/api/whatsapp/status').then(res => res.json()).then(data => { if (data.chats) setChats(data.chats); });
-    fetch('/api/auth/me').then(res => res.json()).then(data => setCurrentUser(data));
+    fetch('/api/whatsapp/status').then(res => {
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      return res.json();
+    }).then(data => { if (data && data.chats) setChats(data.chats); });
+    fetch('/api/auth/me').then(res => {
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      return res.json();
+    }).then(data => { if (data) setCurrentUser(data); });
 
     newSocket.on('whatsapp:message', (msg: Message) => {
       const jid = msg.key.remoteJid;

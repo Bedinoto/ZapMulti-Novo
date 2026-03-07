@@ -33,8 +33,16 @@ export default function ConnectionsPage() {
   const fetchSessions = async () => {
     try {
       const res = await fetch('/api/connections');
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await res.json();
-      setSessions(data);
+      if (Array.isArray(data)) {
+        setSessions(data);
+      } else {
+        console.error('Expected array of sessions, got:', data);
+      }
     } catch (err) {
       console.error('Failed to fetch sessions:', err);
     } finally {
