@@ -18,6 +18,7 @@ import QRCode from 'qrcode';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import * as cookie from 'cookie';
 import { prisma } from './lib/prisma';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -130,8 +131,8 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
                     data: { chatId: pnKey }
                 });
 
-                io.emit('whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
-                io.emit('whatsapp:chat-updated', chats[pnKey]);
+                emitToRelevantUsers(io, 'whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
+                emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[pnKey]);
             } 
             // Case 2: Only LID chat exists, rename it to PN
             else if (chats[lidKey] && !chats[pnKey]) {
@@ -145,8 +146,8 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
                     data: { id: pnKey, jid: pnJid }
                 });
 
-                io.emit('whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
-                io.emit('whatsapp:chat-updated', chats[pnKey]);
+                emitToRelevantUsers(io, 'whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
+                emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[pnKey]);
             }
 
             // --- Contact Merging ---
@@ -173,8 +174,8 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
                     }
                 });
 
-                io.emit('whatsapp:contact-deleted', { jid: lidJid });
-                io.emit('whatsapp:contact-updated', contacts[pnJid]);
+                emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: lidJid });
+                emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[pnJid]);
             } else if (contacts[lidJid] && !contacts[pnJid]) {
                 console.log(`Renaming LID contact ${lidJid} to PN contact ${pnJid}`);
                 contacts[pnJid] = { ...contacts[lidJid], id: pnJid, phoneNumber: pnJid.split('@')[0] };
@@ -186,8 +187,8 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
                     data: { id: pnJid, phoneNumber: pnJid.split('@')[0] }
                 });
 
-                io.emit('whatsapp:contact-deleted', { jid: lidJid });
-                io.emit('whatsapp:contact-new', contacts[pnJid]);
+                emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: lidJid });
+                emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[pnJid]);
             }
         }
     } catch (e) {
@@ -232,6 +233,27 @@ const sessions: Record<string, Session> = {};
 const chats: Record<string, any> = {};
 const contacts: Record<string, any> = {};
 
+function emitToRelevantUsers(io: Server, event: string, data: any) {
+    if (event === 'whatsapp:message' || event === 'whatsapp:chat-updated' || event === 'whatsapp:chat-deleted') {
+        let assignedTo = data.assignedTo;
+        
+        if (!assignedTo && data.chatKey && chats[data.chatKey]) {
+            assignedTo = chats[data.chatKey].assignedTo;
+        }
+        
+        io.to('admins').emit(event, data);
+        if (assignedTo) {
+            io.to(`user_${assignedTo}`).emit(event, data);
+        } else {
+            io.to('agents').emit(event, data);
+        }
+    } else if (event.startsWith('whatsapp:session')) {
+        io.to('admins').emit(event, data);
+    } else {
+        io.emit(event, data);
+    }
+}
+
 async function syncFromDb() {
     console.log('Syncing data from database...');
     try {
@@ -259,6 +281,8 @@ async function syncFromDb() {
                 name: c.name,
                 unreadCount: c.unreadCount,
                 timestamp: c.timestamp.getTime(),
+                assignedTo: c.assignedTo,
+                assignedToName: c.assignedToName,
                 messages: c.messages.map(m => ({
                     key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe },
                     message: m.text ? { conversation: m.text } : {},
@@ -290,7 +314,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
   }
 
   sessions[sessionId].status = 'connecting';
-  io.emit('whatsapp:session-status', { sessionId, status: 'connecting' });
+  emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'connecting' });
 
   try {
     const authPath = `auth_info_baileys_${sessionId}`;
@@ -367,7 +391,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
       if (qr) {
         sessions[sessionId].qrCode = await QRCode.toDataURL(qr);
         sessions[sessionId].status = 'qr';
-        io.emit('whatsapp:session-status', { sessionId, status: 'qr', qr: sessions[sessionId].qrCode });
+        emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'qr', qr: sessions[sessionId].qrCode });
       }
 
       if (connection === 'close') {
@@ -382,14 +406,14 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             console.log(`Session ${sessionId} logged out intentionally`);
             if (sessions[sessionId]) {
                 sessions[sessionId].status = 'disconnected';
-                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
+                emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected' });
             }
         } else {
             if (isQrExpired) {
                 console.log(`Session ${sessionId} QR code expired (attempts ended)`);
                 if (sessions[sessionId]) {
                     sessions[sessionId].qrCode = null;
-                    io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
+                    emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
                 }
             }
 
@@ -412,13 +436,13 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                 }
             }
 
-            if (!isStreamError) {
+            if (!isStreamError && !isQrExpired) {
                 console.log(`Session ${sessionId} connection closed due to `, error, ', reconnecting ', shouldReconnect);
             }
             
             if (sessions[sessionId]) {
                 sessions[sessionId].status = 'disconnected';
-                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
+                emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected' });
             }
             
             if (shouldReconnect) {
@@ -433,7 +457,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
         if (sock.user) {
           sessions[sessionId].userInfo = { ...sock.user, id: normalizeJid(sock.user.id) };
         }
-        io.emit('whatsapp:session-status', { 
+        emitToRelevantUsers(io, 'whatsapp:session-status', { 
           sessionId, 
           status: 'connected', 
           user: sessions[sessionId].userInfo 
@@ -560,7 +584,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                         }
                     });
 
-                    io.emit('whatsapp:contact-new', contacts[targetJid]);
+                    emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
                 } else {
                     // Update existing contact if we found a phone number now
                     if (phoneNumber && !contacts[targetJid].phoneNumber) {
@@ -572,7 +596,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                             data: { phoneNumber: phoneNumber }
                         });
 
-                        io.emit('whatsapp:contact-updated', contacts[targetJid]);
+                        emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
                     }
                 }
             }
@@ -603,7 +627,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             if (jid && contacts[jid]) {
                 if (update.name || update.notify || update.verifiedName) {
                     contacts[jid].name = update.name || update.notify || update.verifiedName || contacts[jid].name;
-                    io.emit('whatsapp:contact-updated', contacts[jid]);
+                    emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[jid]);
                 }
             }
             if (update.id) {
@@ -681,7 +705,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     }
                 });
 
-                io.emit('whatsapp:contact-new', contacts[targetJid]);
+                emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
             } else {
                 contacts[targetJid].lastInteraction = Date.now();
                 let needsUpdate = false;
@@ -706,7 +730,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     }
                 });
 
-                io.emit('whatsapp:contact-updated', contacts[targetJid]);
+                emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
             }
           }
 
@@ -797,7 +821,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             });
           }
 
-          io.emit('whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
+          emitToRelevantUsers(io, 'whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
           await mergeChatsIfNeeded(sessionId, jid, state, io);
         }
       }
@@ -806,7 +830,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
     console.error(`Failed to connect to WhatsApp session ${sessionId}:`, err);
     if (sessions[sessionId]) {
         sessions[sessionId].status = 'disconnected';
-        io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'Failed to connect' });
+        emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected', error: 'Failed to connect' });
     }
   }
 }
@@ -824,6 +848,40 @@ app.prepare().then(async () => {
     pingTimeout: 60000,
     pingInterval: 25000
   });
+
+  io.use((socket, next) => {
+    try {
+      const cookies = cookie.parse(socket.handshake.headers.cookie || '');
+      const token = cookies.token;
+      if (!token) return next(new Error('Authentication error'));
+      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      (socket as any).user = decoded;
+      next();
+    } catch (err) {
+      next(new Error('Authentication error'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    const user = (socket as any).user;
+    if (user.role === 'admin') {
+      socket.join('admins');
+    } else {
+      socket.join('agents');
+    }
+    socket.join(`user_${user.id}`);
+    console.log(`User ${user.name} (${user.role}) connected to socket`);
+  });
+
+  // Test Database Connection
+  try {
+    await prisma.$connect();
+    console.log('✔ Database connected successfully');
+  } catch (err) {
+    console.error('✘ Database connection failed!');
+    console.error('Please check your DATABASE_URL environment variable.');
+    console.error('Error details:', err instanceof Error ? err.message : err);
+  }
 
   await syncFromDb();
 
@@ -954,7 +1012,7 @@ app.prepare().then(async () => {
         }
     });
     
-    io.emit('whatsapp:contact-new', contacts[jid]);
+    emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[jid]);
     res.json(contacts[jid]);
   });
 
@@ -974,7 +1032,7 @@ app.prepare().then(async () => {
         }
     });
     
-    io.emit('whatsapp:chat-updated', chats[chatKey]);
+    emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[chatKey]);
     res.json(chats[chatKey]);
   });
 
@@ -994,7 +1052,7 @@ app.prepare().then(async () => {
         }
     });
     
-    io.emit('whatsapp:chat-updated', chats[chatKey]);
+    emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[chatKey]);
     res.json(chats[chatKey]);
   });
 
@@ -1011,7 +1069,7 @@ app.prepare().then(async () => {
     // DB Delete
     await prisma.chat.delete({ where: { id: chatKey } });
 
-    io.emit('whatsapp:chat-deleted', { chatKey });
+    emitToRelevantUsers(io, 'whatsapp:chat-deleted', { chatKey });
     res.json({ success: true });
   });
 
@@ -1030,7 +1088,7 @@ app.prepare().then(async () => {
       delete sessions[id];
       const authPath = path.join(process.cwd(), `auth_info_baileys_${id}`);
       if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
-      io.emit('whatsapp:session-removed', { sessionId: id });
+      emitToRelevantUsers(io, 'whatsapp:session-removed', { sessionId: id });
       res.json({ success: true });
     } else res.status(404).json({ error: 'Session not found' });
   });
@@ -1108,18 +1166,22 @@ app.prepare().then(async () => {
         chats[chatKey].messages.push(sentMsg);
         if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
       }
-      io.emit('whatsapp:message', { ...sentMsg, sessionId: targetSessionId, chatKey });
+      emitToRelevantUsers(io, 'whatsapp:message', { ...sentMsg, sessionId: targetSessionId, chatKey });
       res.json(sentMsg);
     } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
   });
 
   expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
 
-  server.listen(port, hostname, () => {
+  server.listen(port, hostname, async () => {
     console.log(`> Ready on http://${hostname}:${port}`);
+    
     const files = fs.readdirSync(process.cwd());
     const authFolders = files.filter(f => f.startsWith('auth_info_baileys_'));
     if (authFolders.length === 0) connectToWhatsApp(io, 'default');
     else authFolders.forEach(folder => connectToWhatsApp(io, folder.replace('auth_info_baileys_', '')));
   });
+}).catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

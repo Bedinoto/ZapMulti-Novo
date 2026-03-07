@@ -39,6 +39,8 @@ model Chat {
   name          String?
   unreadCount   Int      @default(0)
   timestamp     DateTime @default(now())
+  assignedTo    String?
+  assignedToName String?
   contact       Contact  @relation(fields: [jid], references: [id])
   messages      Message[]
 
