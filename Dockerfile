@@ -38,8 +38,12 @@ EXPOSE 3000
 # Script to run migrations and start the app
 COPY <<EOF /app/start.sh
 #!/bin/sh
-npx prisma migrate deploy
-npm run prisma:seed
+echo "Waiting for database..."
+until npx prisma db push --accept-data-loss; do
+  echo "Prisma db push failed, retrying in 5 seconds..."
+  sleep 5
+done
+echo "Database ready. Starting app..."
 npx tsx server.ts
 EOF
 
