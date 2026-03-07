@@ -208,7 +208,8 @@ const logger = pino({
                     'failed to decrypt message',
                     'intentional logout',
                     'stream errored',
-                    'stream errored out'
+                    'stream errored out',
+                    'qr refs attempts ended'
                 ];
                 
                 if (suppressStrings.some(s => stringified.includes(s))) return;
@@ -383,14 +384,15 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                 sessions[sessionId].status = 'disconnected';
                 io.emit('whatsapp:session-status', { sessionId, status: 'disconnected' });
             }
-        } else if (isQrExpired) {
-            console.log(`Session ${sessionId} QR code expired (attempts ended)`);
-            if (sessions[sessionId]) {
-                sessions[sessionId].status = 'disconnected';
-                sessions[sessionId].qrCode = null;
-                io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
-            }
         } else {
+            if (isQrExpired) {
+                console.log(`Session ${sessionId} QR code expired (attempts ended)`);
+                if (sessions[sessionId]) {
+                    sessions[sessionId].qrCode = null;
+                    io.emit('whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
+                }
+            }
+
             const isStreamError = errorMessage.includes('Stream Errored');
             const isBadMac = errorMessage.toLowerCase().includes('bad mac');
 
