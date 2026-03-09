@@ -600,7 +600,6 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                         emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
                     }
                 }
-            }
             if (contact.id) {
                 await mergeChatsIfNeeded(sessionId, contact.id, state, io);
             }
