@@ -70,7 +70,7 @@ async function resolvePn(jid: string, state: any): Promise<string | null> {
 }
 
 async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io: Server) {
-    if (!jid) return;
+    if (!jid || jid === 'status@broadcast' || jid.includes('@broadcast')) return;
     
     try {
         // Baileys stores mappings both ways: PN -> LID and LID -> PN
@@ -546,8 +546,9 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
     sock.ev.on('contacts.upsert', async (newContacts) => {
         for (const contact of newContacts) {
             let jid = normalizeJid(contact.id);
-            if (jid && !jid.includes('@g.us')) {
-                let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
+            if (!jid || jid === 'status@broadcast' || jid.includes('@broadcast') || jid.includes('@g.us')) continue;
+            
+            let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
                 
                 // Try to resolve PN for LID contacts
                 if (jid.endsWith('@lid')) {
@@ -664,7 +665,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
           }
 
           let rawJid = msg.key.remoteJid;
-          if (!rawJid) continue;
+          if (!rawJid || rawJid === 'status@broadcast' || rawJid.includes('@broadcast')) continue;
           
           let jid = jidNormalizedUser(rawJid);
           let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
