@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # --- CONFIGURAÇÕES ---
-PROJECT_DIR="zap/ZapMulti-Novo"
+#PROJECT_DIR="zap/ZapMulti-Novo"
 DOCKER_COMPOSE_FILE="docker-compose.yml"
 
 echo "🚀 Iniciando atualização do WhatsApp Manager em $PROJECT_DIR..."
 
 # 1. Entrar no diretório do projeto
-cd $PROJECT_DIR || { echo "❌ Erro: Diretório $PROJECT_DIR não encontrado"; exit 1; }
+#cd $PROJECT_DIR || { echo "❌ Erro: Diretório $PROJECT_DIR não encontrado"; exit 1; }
 
 # 2. Puxar as últimas alterações do Git
 echo "📥 Puxando atualizações do repositório..."
