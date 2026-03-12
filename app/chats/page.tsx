@@ -136,6 +136,12 @@ function ChatContent() {
     pushEnabled: true,
     autoAssign: false
   });
+  const settingsRef = useRef(chatSettings);
+
+  // Update ref whenever state changes
+  useEffect(() => {
+    settingsRef.current = chatSettings;
+  }, [chatSettings]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
@@ -157,7 +163,7 @@ function ChatContent() {
     audio.load();
 
     const unlockAudio = () => {
-      if (notificationSound.current && !audioUnlocked) {
+      if (notificationSound.current) {
         notificationSound.current.play()
           .then(() => {
             notificationSound.current!.pause();
@@ -165,12 +171,14 @@ function ChatContent() {
             setAudioUnlocked(true);
             console.log('Áudio desbloqueado com sucesso!');
             window.removeEventListener('click', unlockAudio);
+            window.removeEventListener('touchstart', unlockAudio);
           })
           .catch(err => console.log('Aguardando interação para desbloquear áudio...'));
       }
     };
 
     window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
 
     const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
@@ -189,16 +197,22 @@ function ChatContent() {
       const chatKey = msg.chatKey || jid;
       
       if (!msg.key.fromMe) {
+        const currentSettings = settingsRef.current;
+        console.log('Configurações atuais:', currentSettings);
+
         // Play sound if enabled
-        if (chatSettings.soundEnabled) {
+        if (currentSettings.soundEnabled) {
           console.log('Tentando reproduzir som de notificação...');
-          notificationSound.current?.play().catch(err => {
-            console.warn('Reprodução de áudio bloqueada. Clique na página para ativar.', err);
-          });
+          if (notificationSound.current) {
+            notificationSound.current.currentTime = 0;
+            notificationSound.current.play().catch(err => {
+              console.warn('Reprodução de áudio bloqueada ou falhou.', err);
+            });
+          }
         }
 
         // Show push notification if enabled
-        if (chatSettings.pushEnabled && Notification.permission === 'granted') {
+        if (currentSettings.pushEnabled && Notification.permission === 'granted') {
           const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 'Nova mídia recebida';
           new Notification(msg.pushName || 'Nova Mensagem', {
             body: text,
