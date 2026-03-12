@@ -135,8 +135,10 @@ function ChatContent() {
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
 
   useEffect(() => {
-    notificationSound.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
-    notificationSound.current.volume = 0.5;
+    // Using a more reliable sound URL
+    notificationSound.current = new Audio('https://www.soundjay.com/buttons/sounds/button-3.mp3');
+    notificationSound.current.volume = 0.6;
+    notificationSound.current.preload = 'auto';
 
     const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
@@ -150,11 +152,15 @@ function ChatContent() {
     }).then(data => { if (data) setCurrentUser(data); });
 
     newSocket.on('whatsapp:message', (msg: Message) => {
+      console.log('Nova mensagem recebida:', msg);
       const jid = msg.key.remoteJid;
       const chatKey = msg.chatKey || jid;
       
       if (!msg.key.fromMe) {
-        notificationSound.current?.play().catch(err => console.log('Audio play blocked by browser:', err));
+        console.log('Tentando reproduzir som de notificação...');
+        notificationSound.current?.play().catch(err => {
+          console.warn('Reprodução de áudio bloqueada pelo navegador. Clique na página para ativar.', err);
+        });
       }
 
       setChats(prev => {
@@ -289,7 +295,19 @@ function ChatContent() {
       <Sidebar />
       <div className="w-96 bg-white border-r border-zinc-200 flex flex-col">
         <div className="p-6 border-b border-zinc-100">
-          <h2 className="text-xl font-bold text-zinc-900 mb-4">Mensagens</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold text-zinc-900">Mensagens</h2>
+            <button 
+              onClick={() => {
+                notificationSound.current?.play().catch(err => alert('Clique na página primeiro para permitir o som!'));
+              }}
+              className="text-[10px] bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+              title="Testar som de notificação"
+            >
+              <Volume2 className="w-3 h-3" />
+              Testar Som
+            </button>
+          </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
             <input type="text" placeholder="Buscar conversas..." className="w-full pl-10 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
