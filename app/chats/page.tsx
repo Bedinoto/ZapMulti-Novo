@@ -131,11 +131,22 @@ function ChatContent() {
 
   const notificationSound = useRef<HTMLAudioElement | null>(null);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [chatSettings, setChatSettings] = useState({
+    soundEnabled: true,
+    pushEnabled: true,
+    autoAssign: false
+  });
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
 
   useEffect(() => {
+    // Load settings
+    const savedSettings = localStorage.getItem('chat_settings');
+    if (savedSettings) {
+      setChatSettings(JSON.parse(savedSettings));
+    }
+
     // Som de notificação mais curto e compatível
     const audio = new Audio('https://raw.githubusercontent.com/rafael-lua/files/main/notification.mp3');
     audio.volume = 0.6;
@@ -178,10 +189,22 @@ function ChatContent() {
       const chatKey = msg.chatKey || jid;
       
       if (!msg.key.fromMe) {
-        console.log('Tentando reproduzir som de notificação...');
-        notificationSound.current?.play().catch(err => {
-          console.warn('Reprodução de áudio bloqueada. Clique na página para ativar.', err);
-        });
+        // Play sound if enabled
+        if (chatSettings.soundEnabled) {
+          console.log('Tentando reproduzir som de notificação...');
+          notificationSound.current?.play().catch(err => {
+            console.warn('Reprodução de áudio bloqueada. Clique na página para ativar.', err);
+          });
+        }
+
+        // Show push notification if enabled
+        if (chatSettings.pushEnabled && Notification.permission === 'granted') {
+          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 'Nova mídia recebida';
+          new Notification(msg.pushName || 'Nova Mensagem', {
+            body: text,
+            icon: '/favicon.ico'
+          });
+        }
       }
 
       setChats(prev => {
