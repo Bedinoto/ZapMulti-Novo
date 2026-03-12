@@ -129,10 +129,15 @@ function ChatContent() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const notificationSound = useRef<HTMLAudioElement | null>(null);
+
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
 
   useEffect(() => {
+    notificationSound.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
+    notificationSound.current.volume = 0.5;
+
     const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
     fetch('/api/whatsapp/status').then(res => {
@@ -147,6 +152,11 @@ function ChatContent() {
     newSocket.on('whatsapp:message', (msg: Message) => {
       const jid = msg.key.remoteJid;
       const chatKey = msg.chatKey || jid;
+      
+      if (!msg.key.fromMe) {
+        notificationSound.current?.play().catch(err => console.log('Audio play blocked by browser:', err));
+      }
+
       setChats(prev => {
         const chat = prev[chatKey] || { id: jid, sessionId: msg.sessionId, key: chatKey, name: msg.pushName || jid.split('@')[0], unreadCount: 0, messages: [] };
         const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
