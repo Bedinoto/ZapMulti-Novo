@@ -30,27 +30,6 @@ export default function SettingsPage() {
             <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
               <div className="p-6 border-b border-zinc-50">
                 <h2 className="font-bold text-zinc-900 flex items-center gap-2">
-                  <User className="w-5 h-5 text-emerald-600" />
-                  Perfil do Agente
-                </h2>
-              </div>
-              <div className="p-6 space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-zinc-700 mb-2">Nome de Exibição</label>
-                    <input type="text" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" placeholder="Seu nome" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-zinc-700 mb-2">E-mail</label>
-                    <input type="email" className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" placeholder="seu@email.com" disabled />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-zinc-50">
-                <h2 className="font-bold text-zinc-900 flex items-center gap-2">
                   <MessageSquare className="w-5 h-5 text-emerald-600" />
                   Preferências de Chat
                 </h2>
