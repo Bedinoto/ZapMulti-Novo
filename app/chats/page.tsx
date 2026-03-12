@@ -130,15 +130,36 @@ function ChatContent() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const notificationSound = useRef<HTMLAudioElement | null>(null);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
 
   useEffect(() => {
-    // Using a more reliable sound URL
-    notificationSound.current = new Audio('https://www.soundjay.com/buttons/sounds/button-3.mp3');
-    notificationSound.current.volume = 0.6;
-    notificationSound.current.preload = 'auto';
+    // Som de notificação mais curto e compatível
+    const audio = new Audio('https://raw.githubusercontent.com/rafael-lua/files/main/notification.mp3');
+    audio.volume = 0.6;
+    audio.preload = 'auto';
+    notificationSound.current = audio;
+
+    // Tenta carregar o áudio
+    audio.load();
+
+    const unlockAudio = () => {
+      if (notificationSound.current && !audioUnlocked) {
+        notificationSound.current.play()
+          .then(() => {
+            notificationSound.current!.pause();
+            notificationSound.current!.currentTime = 0;
+            setAudioUnlocked(true);
+            console.log('Áudio desbloqueado com sucesso!');
+            window.removeEventListener('click', unlockAudio);
+          })
+          .catch(err => console.log('Aguardando interação para desbloquear áudio...'));
+      }
+    };
+
+    window.addEventListener('click', unlockAudio);
 
     const newSocket = io({ transports: ['polling', 'websocket'] });
     setSocket(newSocket);
@@ -159,7 +180,7 @@ function ChatContent() {
       if (!msg.key.fromMe) {
         console.log('Tentando reproduzir som de notificação...');
         notificationSound.current?.play().catch(err => {
-          console.warn('Reprodução de áudio bloqueada pelo navegador. Clique na página para ativar.', err);
+          console.warn('Reprodução de áudio bloqueada. Clique na página para ativar.', err);
         });
       }
 
@@ -299,13 +320,20 @@ function ChatContent() {
             <h2 className="text-xl font-bold text-zinc-900">Mensagens</h2>
             <button 
               onClick={() => {
-                notificationSound.current?.play().catch(err => alert('Clique na página primeiro para permitir o som!'));
+                notificationSound.current?.play()
+                  .then(() => setAudioUnlocked(true))
+                  .catch(err => alert('Erro ao tocar som. Por favor, clique em qualquer lugar da página primeiro e tente novamente.'));
               }}
-              className="text-[10px] bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+              className={cn(
+                "text-[10px] px-2 py-1 rounded-lg transition-all flex items-center gap-1 shadow-sm",
+                audioUnlocked 
+                  ? "bg-emerald-50 text-emerald-600 border border-emerald-100" 
+                  : "bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border border-zinc-200"
+              )}
               title="Testar som de notificação"
             >
-              <Volume2 className="w-3 h-3" />
-              Testar Som
+              <Volume2 className={cn("w-3 h-3", audioUnlocked && "animate-pulse")} />
+              {audioUnlocked ? 'Som Ativo' : 'Testar Som'}
             </button>
           </div>
           <div className="relative">
