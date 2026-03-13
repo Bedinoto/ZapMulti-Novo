@@ -491,7 +491,7 @@ function ChatContent() {
                     <div className={cn("flex items-center gap-2 w-full", isMe ? "flex-row-reverse" : "flex-row")}>
                       <button 
                         onClick={() => setReplyingTo(msg)}
-                        className="p-1.5 bg-white border border-zinc-200 rounded-full text-zinc-400 hover:text-emerald-600 hover:border-emerald-200 transition-all opacity-0 group-hover:opacity-100 shadow-sm shrink-0"
+                        className="p-1.5 bg-white border border-zinc-200 rounded-full text-zinc-400 hover:text-emerald-600 hover:border-emerald-200 transition-all shadow-sm shrink-0"
                         title="Responder"
                       >
                         <Reply className="w-3.5 h-3.5" />
