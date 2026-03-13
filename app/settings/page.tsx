@@ -10,7 +10,8 @@ import {
   Smartphone,
   MessageSquare,
   Save,
-  CheckCircle2
+  CheckCircle2,
+  Play
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
@@ -45,6 +46,12 @@ export default function SettingsPage() {
       Notification.requestPermission();
     }
 
+    // Test sound if enabled to unlock audio context
+    if (settings.soundEnabled) {
+      const audio = new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3');
+      audio.play().catch(e => console.log('Audio play blocked:', e));
+    }
+
     setTimeout(() => {
       setIsSaving(false);
       setShowSuccess(true);
@@ -53,7 +60,25 @@ export default function SettingsPage() {
   };
 
   const menuItems = [
-    { id: 'soundEnabled', icon: Bell, label: 'Notificações Sonoras', desc: 'Tocar som ao receber novas mensagens' },
+    { 
+      id: 'soundEnabled', 
+      icon: Bell, 
+      label: 'Notificações Sonoras', 
+      desc: 'Tocar som ao receber novas mensagens',
+      action: (
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            const audio = new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3');
+            audio.play().catch(err => alert('Clique na página primeiro para permitir o som.'));
+          }}
+          className="p-2 hover:bg-zinc-100 rounded-lg text-zinc-400 hover:text-emerald-600 transition-colors"
+          title="Testar Som"
+        >
+          <Play className="w-4 h-4" />
+        </button>
+      )
+    },
     { id: 'pushEnabled', icon: Smartphone, label: 'Notificações Push', desc: 'Receber alertas no navegador' },
     { id: 'autoAssign', icon: Globe, label: 'Auto-atribuição', desc: 'Atribuir conversas novas automaticamente' },
   ];
@@ -106,18 +131,21 @@ export default function SettingsPage() {
                           <p className="text-xs text-zinc-500">{item.desc}</p>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => handleToggle(item.id as keyof typeof settings)}
-                        className={cn(
-                          "w-12 h-6 rounded-full transition-all relative",
-                          isActive ? "bg-emerald-600" : "bg-zinc-200"
-                        )}
-                      >
-                        <div className={cn(
-                          "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
-                          isActive ? "right-1" : "left-1"
-                        )} />
-                      </button>
+                      <div className="flex items-center gap-4">
+                        {item.action}
+                        <button 
+                          onClick={() => handleToggle(item.id as keyof typeof settings)}
+                          className={cn(
+                            "w-12 h-6 rounded-full transition-all relative",
+                            isActive ? "bg-emerald-600" : "bg-zinc-200"
+                          )}
+                        >
+                          <div className={cn(
+                            "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
+                            isActive ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
