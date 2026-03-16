@@ -219,10 +219,23 @@ function ChatContent() {
       return res.json();
     }).then(data => { if (data) setCurrentUser(data); });
 
-    newSocket.on('whatsapp:message', (msg: Message) => {
+    newSocket.on('whatsapp:message', (msg: any) => {
       console.log('Nova mensagem recebida:', msg);
       const jid = msg.key.remoteJid;
       const chatKey = msg.chatKey || jid;
+
+      // Extract quoted message info if not already present
+      if (!msg.quotedMessageId) {
+        msg.quotedMessageId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId || 
+                             msg.message?.imageMessage?.contextInfo?.stanzaId ||
+                             msg.message?.videoMessage?.contextInfo?.stanzaId ||
+                             msg.message?.audioMessage?.contextInfo?.stanzaId ||
+                             msg.message?.documentMessage?.contextInfo?.stanzaId;
+      }
+      if (!msg.quotedMessageText) {
+        msg.quotedMessageText = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+                               msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text;
+      }
       
       if (!msg.key.fromMe) {
         const currentSettings = settingsRef.current;
@@ -516,7 +529,7 @@ function ChatContent() {
                 const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
                 if (!text && !msg.mediaUrl) return null;
                 return (
-                  <div key={msg.key.id} className={cn("flex flex-col max-w-[70%] group", isMe ? "ml-auto items-end" : "items-start")}>
+                  <div key={msg.key.id} id={`msg-${msg.key.id}`} className={cn("flex flex-col max-w-[70%] group", isMe ? "ml-auto items-end" : "items-start")}>
                     <div className="flex items-center gap-2 w-full">
                       {!isMe && (
                         <button 
@@ -529,13 +542,25 @@ function ChatContent() {
                       )}
                       <div className={cn("px-4 py-2 rounded-2xl text-sm shadow-sm overflow-hidden flex-1", isMe ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white text-zinc-900 rounded-tl-none border border-zinc-200")}>
                         {(msg.quotedMessageId || msg.quotedMessageText) && (
-                          <div className={cn(
-                            "mb-2 p-2 rounded-lg border-l-4 text-xs",
-                            isMe ? "bg-white/10 border-white/40 text-white/90" : "bg-zinc-50 border-emerald-500 text-zinc-500"
-                          )}>
-                            <p className="font-bold mb-0.5">Mensagem respondida</p>
+                          <div 
+                            className={cn(
+                              "mb-2 p-2 rounded-lg border-l-4 text-xs cursor-pointer hover:bg-opacity-80 transition-all",
+                              isMe ? "bg-black/20 border-white/40 text-white/90" : "bg-zinc-100 border-emerald-500 text-zinc-500"
+                            )}
+                            onClick={() => {
+                              const element = document.getElementById(`msg-${msg.quotedMessageId}`);
+                              if (element) {
+                                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                element.classList.add('ring-2', 'ring-emerald-500', 'ring-offset-2');
+                                setTimeout(() => element.classList.remove('ring-2', 'ring-emerald-500', 'ring-offset-2'), 2000);
+                              }
+                            }}
+                          >
+                            <p className={cn("font-bold mb-0.5", isMe ? "text-white" : "text-emerald-600")}>
+                              {msg.quotedMessageText ? 'Mensagem respondida' : 'Mídia respondida'}
+                            </p>
                             <p className="truncate italic">
-                              {msg.quotedMessageText || (msg.quotedMessageId ? 'Mídia' : '')}
+                              {msg.quotedMessageText || 'Visualizar mídia'}
                             </p>
                           </div>
                         )}

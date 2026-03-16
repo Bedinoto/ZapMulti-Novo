@@ -1268,8 +1268,9 @@ app.prepare().then(async () => {
       let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
       
       let options: any = {};
+      let quotedMsg: any = null;
       if (quotedMessageId && chats[chatKey]) {
-        const quotedMsg = chats[chatKey].messages.find((m: any) => m.key.id === quotedMessageId);
+        quotedMsg = chats[chatKey].messages.find((m: any) => m.key.id === quotedMessageId);
         if (quotedMsg) {
           options.quoted = quotedMsg;
         }
@@ -1289,7 +1290,15 @@ app.prepare().then(async () => {
           data: { timestamp: new Date() }
       }).catch(err => console.error('Failed to update chat timestamp in DB:', err));
 
-      emitToRelevantUsers(io, 'whatsapp:message', { ...sentMsg, sessionId: targetSessionId, chatKey });
+      const emitMsg = { 
+        ...sentMsg, 
+        sessionId: targetSessionId, 
+        chatKey,
+        quotedMessageId,
+        quotedMessageText: quotedMsg ? (quotedMsg.message?.conversation || quotedMsg.message?.extendedTextMessage?.text) : undefined
+      };
+
+      emitToRelevantUsers(io, 'whatsapp:message', emitMsg);
       res.json(sentMsg);
     } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
   });
