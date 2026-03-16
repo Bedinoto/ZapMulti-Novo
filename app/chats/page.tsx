@@ -6,7 +6,7 @@ import { io, Socket } from 'socket.io-client';
 import { 
   Search, Send, MoreVertical, Phone, Video, User, Check, CheckCheck, 
   MessageSquare, CheckCircle, Paperclip, File, X, Image as ImageIcon, Download, Maximize2,
-  Play, Pause, Volume2, Reply
+  Play, Pause, Volume2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Sidebar from '@/components/Sidebar';
@@ -14,15 +14,7 @@ import { cn } from '@/lib/utils';
 
 interface Message {
   key: { remoteJid: string; fromMe: boolean; id: string; };
-  message?: { 
-    conversation?: string; 
-    extendedTextMessage?: { text: string; contextInfo?: any }; 
-    imageMessage?: any; 
-    videoMessage?: any; 
-    audioMessage?: any; 
-    documentMessage?: any;
-    protocolMessage?: any;
-  };
+  message?: { conversation?: string; extendedTextMessage?: { text: string; }; imageMessage?: any; videoMessage?: any; audioMessage?: any; documentMessage?: any; };
   messageTimestamp: number;
   pushName?: string;
   status?: number;
@@ -131,11 +123,9 @@ function ChatContent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [socket, setSocket] = useState<Socket | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [whatsappUser, setWhatsappUser] = useState<any>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -256,13 +246,6 @@ function ChatContent() {
       setChats(prev => ({ ...prev, [updatedChat.key || updatedChat.id]: updatedChat }));
     });
 
-    newSocket.on('whatsapp:session-status', (data: any) => {
-      console.log('Status da sessão:', data);
-      if (data.status === 'connected' && data.user) {
-        setWhatsappUser(data.user);
-      }
-    });
-
     return () => { newSocket.close(); };
   }, []);
 
@@ -355,17 +338,15 @@ function ChatContent() {
     if ((!messageInput.trim() && !selectedFile) || !selectedChatId) return;
     const text = messageInput;
     const file = selectedFile;
-    const quoted = replyingTo;
     setMessageInput(''); 
     clearSelectedFile();
-    setReplyingTo(null);
     const sendRequest = async (body: any) => {
       try {
         const res = await fetch('/api/whatsapp/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!res.ok) { const data = await res.json(); alert(data.error || 'Falha ao enviar'); }
       } catch (err) { console.error('Falha ao enviar:', err); }
     };
-    const commonBody = { jid: selectedChat!.id, sessionId: selectedChat!.sessionId, text, quoted };
+    const commonBody = { jid: selectedChat!.id, sessionId: selectedChat!.sessionId, text };
     if (file) {
       const reader = new FileReader(); reader.readAsDataURL(file);
       reader.onload = async () => {
@@ -487,37 +468,9 @@ function ChatContent() {
                 const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
                 if (!text && !msg.mediaUrl) return null;
                 return (
-                  <div key={msg.key.id} className={cn("flex flex-col max-w-[70%] group", isMe ? "ml-auto items-end" : "items-start")}>
-                    <div className={cn("flex items-center gap-2 w-full", isMe ? "flex-row-reverse" : "flex-row")}>
-                      <button 
-                        onClick={() => setReplyingTo(msg)}
-                        className="p-1.5 bg-white border border-zinc-200 rounded-full text-zinc-400 hover:text-emerald-600 hover:border-emerald-200 transition-all opacity-0 group-hover:opacity-100 shadow-sm shrink-0"
-                        title="Responder"
-                      >
-                        <Reply className="w-3.5 h-3.5" />
-                      </button>
-                      <div className={cn("px-4 py-2 rounded-2xl text-sm shadow-sm overflow-hidden", isMe ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white text-zinc-900 rounded-tl-none border border-zinc-200")}>
-                        {/* Quoted Message Rendering */}
-                        {msg.message?.extendedTextMessage?.contextInfo?.quotedMessage && (
-                          <div className={cn(
-                            "mb-2 p-2 rounded-lg border-l-4 text-xs bg-black/5",
-                            isMe ? "border-white/50 text-white/90" : "border-emerald-500 text-zinc-600"
-                          )}>
-                            <p className="font-bold uppercase text-[9px] mb-0.5 opacity-70">
-                              {msg.message.extendedTextMessage.contextInfo.participant === whatsappUser?.id ? 'Você' : 'Contato'}
-                            </p>
-                            <p className="truncate italic">
-                              {msg.message.extendedTextMessage.contextInfo.quotedMessage.conversation || 
-                               msg.message.extendedTextMessage.contextInfo.quotedMessage.extendedTextMessage?.text || 
-                               (msg.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage ? '📷 Foto' : '') || 
-                               (msg.message.extendedTextMessage.contextInfo.quotedMessage.videoMessage ? '🎥 Vídeo' : '') || 
-                               (msg.message.extendedTextMessage.contextInfo.quotedMessage.audioMessage ? '🎤 Áudio' : '') || 
-                               (msg.message.extendedTextMessage.contextInfo.quotedMessage.documentMessage ? '📄 Documento' : '') || 'Mensagem'}
-                            </p>
-                          </div>
-                        )}
-
-                        {msg.mediaUrl && msg.mediaType === 'image' && (
+                  <div key={msg.key.id} className={cn("flex flex-col max-w-[70%]", isMe ? "ml-auto items-end" : "items-start")}>
+                    <div className={cn("px-4 py-2 rounded-2xl text-sm shadow-sm overflow-hidden", isMe ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white text-zinc-900 rounded-tl-none border border-zinc-200")}>
+                      {msg.mediaUrl && msg.mediaType === 'image' && (
                         <img 
                           src={msg.mediaUrl} 
                           alt="Foto" 
@@ -555,9 +508,8 @@ function ChatContent() {
                     </div>
                     <span className="text-[10px] text-zinc-400 mt-1">{new Date(msg.messageTimestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
             <div className="p-6 bg-white border-t border-zinc-200">
@@ -575,30 +527,6 @@ function ChatContent() {
               ) : (
                 <>
                   <AnimatePresence>
-                    {replyingTo && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 10 }}
-                        className="mb-2 p-3 bg-zinc-100 rounded-xl border-l-4 border-emerald-500 flex items-center justify-between gap-3"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[10px] font-bold text-emerald-600 uppercase mb-0.5">
-                            {replyingTo.key.fromMe ? 'Você' : (replyingTo.pushName || 'Contato')}
-                          </p>
-                          <p className="text-xs text-zinc-600 truncate">
-                            {replyingTo.message?.conversation || replyingTo.message?.extendedTextMessage?.text || (replyingTo.message?.imageMessage ? '📷 Foto' : '') || (replyingTo.message?.videoMessage ? '🎥 Vídeo' : '') || (replyingTo.message?.audioMessage ? '🎤 Áudio' : '') || (replyingTo.message?.documentMessage ? '📄 Documento' : '') || ''}
-                          </p>
-                        </div>
-                        <button 
-                          type="button" 
-                          onClick={() => setReplyingTo(null)}
-                          className="p-1 text-zinc-400 hover:text-zinc-600 transition-colors"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </motion.div>
-                    )}
                     {selectedFile && (
                       <motion.div 
                         initial={{ opacity: 0, y: 10 }}
