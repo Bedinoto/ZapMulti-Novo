@@ -1228,7 +1228,7 @@ app.prepare().then(async () => {
   });
 
   expressApp.post('/api/whatsapp/send', authenticate, async (req: any, res) => {
-    const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId } = req.body;
+    const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId, quoted } = req.body;
     let jid = normalizeJid(rawJid);
     let targetSessionId = sessionId;
     if (!targetSessionId) {
@@ -1247,7 +1247,8 @@ app.prepare().then(async () => {
 
     try {
       let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
-      const sentMsg = await session.sock.sendMessage(jid, msgPayload);
+      const options = quoted ? { quoted } : {};
+      const sentMsg = await session.sock.sendMessage(jid, msgPayload, options);
       if (chats[chatKey]) {
         chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
         chats[chatKey].messages.push(sentMsg);
