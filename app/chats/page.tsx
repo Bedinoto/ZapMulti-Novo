@@ -6,7 +6,7 @@ import { io, Socket } from 'socket.io-client';
 import { 
   Search, Send, MoreVertical, Phone, Video, User, Check, CheckCheck, 
   MessageSquare, CheckCircle, Paperclip, File, X, Image as ImageIcon, Download, Maximize2,
-  Play, Pause, Volume2
+  Play, Pause, Volume2, Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Sidebar from '@/components/Sidebar';
@@ -129,6 +129,9 @@ function ChatContent() {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [showConfirm, setShowConfirm] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -141,10 +144,22 @@ function ChatContent() {
   });
   const settingsRef = useRef(chatSettings);
 
-  // Update ref whenever state changes
+  // Update ref whenever state changes and save to localStorage
   useEffect(() => {
     settingsRef.current = chatSettings;
+    localStorage.setItem('chat_settings', JSON.stringify(chatSettings));
   }, [chatSettings]);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [selectedChatId, chats]);
@@ -157,10 +172,20 @@ function ChatContent() {
     }
 
     // Som de notificação mais curto e compatível
-    const audio = new Audio('https://raw.githubusercontent.com/rafael-lua/files/main/notification.mp3');
+    const audio = new Audio('https://cdn.pixabay.com/audio/2022/03/15/audio_78390a2431.mp3');
     audio.volume = 0.6;
     audio.preload = 'auto';
+    audio.crossOrigin = 'anonymous';
     notificationSound.current = audio;
+
+    audio.addEventListener('error', (e) => {
+      console.error('Erro detalhado ao carregar áudio:', e);
+      console.log('Tentando fallback para outro som...');
+      if (notificationSound.current) {
+        notificationSound.current.src = 'https://www.soundjay.com/buttons/sounds/button-09a.mp3';
+        notificationSound.current.load();
+      }
+    });
 
     // Tenta carregar o áudio
     audio.load();
@@ -229,7 +254,8 @@ function ChatContent() {
         const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
         const msgExists = chat.messages.some(m => m.key.id === msg.key.id);
         const newMessages = msgExists ? chat.messages : [...chat.messages, msg];
-        return { ...prev, [chatKey]: { ...chat, lastMessage: text, timestamp: msg.messageTimestamp, messages: newMessages.slice(-50) } };
+        const newTimestamp = msg.messageTimestamp || Math.floor(Date.now() / 1000);
+        return { ...prev, [chatKey]: { ...chat, lastMessage: text, timestamp: newTimestamp, messages: newMessages.slice(-50) } };
       });
     });
 
@@ -268,7 +294,11 @@ function ChatContent() {
       
       return matchesSearch && (isAssignedToMe || isUnassigned);
     })
-    .sort((a, b) => b.timestamp - a.timestamp);
+    .sort((a, b) => {
+      const timeA = a.timestamp || 0;
+      const timeB = b.timestamp || 0;
+      return timeB - timeA;
+    });
 
   const selectedChat = selectedChatId ? chats[selectedChatId] : null;
 
@@ -277,7 +307,7 @@ function ChatContent() {
       const res = await fetch(`/api/whatsapp/chats/${chatKey}/accept`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json();
-        alert(data.error || 'Erro ao aceitar conversa');
+        showToast(data.error || 'Erro ao aceitar conversa', 'error');
       }
     } catch (err) {
       console.error('Erro ao aceitar conversa:', err);
@@ -289,7 +319,7 @@ function ChatContent() {
       const res = await fetch(`/api/whatsapp/chats/${chatKey}/reject`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json();
-        alert(data.error || 'Erro ao rejeitar conversa');
+        showToast(data.error || 'Erro ao rejeitar conversa', 'error');
       }
     } catch (err) {
       console.error('Erro ao rejeitar conversa:', err);
@@ -297,18 +327,25 @@ function ChatContent() {
   };
 
   const handleFinishChat = async (chatKey: string) => {
-    if (!confirm('Deseja realmente finalizar e excluir esta conversa?')) return;
-    try {
-      const res = await fetch(`/api/whatsapp/chats/${chatKey}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || 'Erro ao finalizar conversa');
-      } else {
-        setSelectedChatId(null);
+    setShowConfirm({
+      message: 'Deseja realmente finalizar e excluir esta conversa?',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/whatsapp/chats/${chatKey}`, { method: 'DELETE' });
+          if (!res.ok) {
+            const data = await res.json();
+            showToast(data.error || 'Erro ao finalizar conversa', 'error');
+          } else {
+            setSelectedChatId(null);
+            showToast('Conversa finalizada com sucesso');
+          }
+        } catch (err) {
+          console.error('Erro ao finalizar conversa:', err);
+          showToast('Erro ao finalizar conversa', 'error');
+        }
+        setShowConfirm(null);
       }
-    } catch (err) {
-      console.error('Erro ao finalizar conversa:', err);
-    }
+    });
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -342,7 +379,10 @@ function ChatContent() {
     const sendRequest = async (body: any) => {
       try {
         const res = await fetch('/api/whatsapp/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) { const data = await res.json(); alert(data.error || 'Falha ao enviar'); }
+        if (!res.ok) { 
+          const data = await res.json(); 
+          showToast(data.error || 'Falha ao enviar', 'error'); 
+        }
       } catch (err) { console.error('Falha ao enviar:', err); }
     };
     const commonBody = { jid: selectedChat!.id, sessionId: selectedChat!.sessionId, text, quotedMessageId: quotedId };
@@ -362,23 +402,32 @@ function ChatContent() {
         <div className="p-6 border-b border-zinc-100">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold text-zinc-900">Mensagens</h2>
-            <button 
-              onClick={() => {
-                notificationSound.current?.play()
-                  .then(() => setAudioUnlocked(true))
-                  .catch(err => alert('Erro ao tocar som. Por favor, clique em qualquer lugar da página primeiro e tente novamente.'));
-              }}
-              className={cn(
-                "text-[10px] px-2 py-1 rounded-lg transition-all flex items-center gap-1 shadow-sm",
-                audioUnlocked 
-                  ? "bg-emerald-50 text-emerald-600 border border-emerald-100" 
-                  : "bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border border-zinc-200"
-              )}
-              title="Testar som de notificação"
-            >
-              <Volume2 className={cn("w-3 h-3", audioUnlocked && "animate-pulse")} />
-              {audioUnlocked ? 'Som Ativo' : 'Testar Som'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => {
+                  notificationSound.current?.play()
+                    .then(() => setAudioUnlocked(true))
+                    .catch(err => showToast('Erro ao tocar som. Por favor, clique em qualquer lugar da página primeiro e tente novamente.', 'error'));
+                }}
+                className={cn(
+                  "text-[10px] px-2 py-1 rounded-lg transition-all flex items-center gap-1 shadow-sm",
+                  audioUnlocked 
+                    ? "bg-emerald-50 text-emerald-600 border border-emerald-100" 
+                    : "bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border border-zinc-200"
+                )}
+                title="Testar som de notificação"
+              >
+                <Volume2 className={cn("w-3 h-3", audioUnlocked && "animate-pulse")} />
+                {audioUnlocked ? 'Som Ativo' : 'Testar Som'}
+              </button>
+              <button 
+                onClick={() => setShowSettings(true)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all"
+                title="Configurações de Chat"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+            </div>
           </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
@@ -628,6 +677,89 @@ function ChatContent() {
         )}
       </div>
       <AnimatePresence>
+        {showSettings && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowSettings(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50">
+                <h3 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
+                  <Settings className="w-5 h-5 text-emerald-600" />
+                  Configurações de Chat
+                </h3>
+                <button onClick={() => setShowSettings(false)} className="p-2 text-zinc-400 hover:text-zinc-600 transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-zinc-900">Som de Notificação</p>
+                    <p className="text-xs text-zinc-500">Tocar um som ao receber novas mensagens</p>
+                  </div>
+                  <button 
+                    onClick={() => setChatSettings(prev => ({ ...prev, soundEnabled: !prev.soundEnabled }))}
+                    className={cn(
+                      "w-12 h-6 rounded-full transition-all relative",
+                      chatSettings.soundEnabled ? "bg-emerald-500" : "bg-zinc-200"
+                    )}
+                  >
+                    <div className={cn(
+                      "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
+                      chatSettings.soundEnabled ? "right-1" : "left-1"
+                    )} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-zinc-900">Notificações Push</p>
+                    <p className="text-xs text-zinc-500">Mostrar alertas do navegador</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      if (!chatSettings.pushEnabled && Notification.permission !== 'granted') {
+                        Notification.requestPermission().then(permission => {
+                          if (permission === 'granted') {
+                            setChatSettings(prev => ({ ...prev, pushEnabled: true }));
+                          }
+                        });
+                      } else {
+                        setChatSettings(prev => ({ ...prev, pushEnabled: !prev.pushEnabled }));
+                      }
+                    }}
+                    className={cn(
+                      "w-12 h-6 rounded-full transition-all relative",
+                      chatSettings.pushEnabled ? "bg-emerald-500" : "bg-zinc-200"
+                    )}
+                  >
+                    <div className={cn(
+                      "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
+                      chatSettings.pushEnabled ? "right-1" : "left-1"
+                    )} />
+                  </button>
+                </div>
+              </div>
+              <div className="p-6 bg-zinc-50 border-t border-zinc-100">
+                <button 
+                  onClick={() => setShowSettings(false)}
+                  className="w-full py-3 bg-zinc-900 text-white font-bold rounded-xl hover:bg-zinc-800 transition-all"
+                >
+                  Fechar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
         {previewImage && (
           <motion.div 
             initial={{ opacity: 0 }}
@@ -651,6 +783,63 @@ function ChatContent() {
               className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={cn(
+              "fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl z-[100] flex items-center gap-3 min-w-[300px]",
+              toast.type === 'error' ? "bg-red-600 text-white" : "bg-zinc-900 text-white"
+            )}
+          >
+            {toast.type === 'error' ? <X className="w-5 h-5" /> : <CheckCircle className="w-5 h-5 text-emerald-400" />}
+            <p className="text-sm font-medium">{toast.message}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+            >
+              <div className="p-6 text-center">
+                <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <X className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-bold text-zinc-900 mb-2">Confirmar Ação</h3>
+                <p className="text-sm text-zinc-500">{showConfirm.message}</p>
+              </div>
+              <div className="p-4 bg-zinc-50 flex gap-3">
+                <button 
+                  onClick={() => setShowConfirm(null)}
+                  className="flex-1 py-3 bg-white border border-zinc-200 text-zinc-600 font-bold rounded-xl hover:bg-zinc-100 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={showConfirm.onConfirm}
+                  className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

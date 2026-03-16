@@ -280,7 +280,7 @@ async function syncFromDb() {
                 key: chatKey,
                 name: c.name,
                 unreadCount: c.unreadCount,
-                timestamp: c.timestamp.getTime(),
+                timestamp: Math.floor(c.timestamp.getTime() / 1000),
                 assignedTo: c.assignedTo,
                 assignedToName: c.assignedToName,
                 messages: c.messages.map(m => ({
@@ -802,7 +802,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
               sessionId: sessionId,
               key: chatKey,
               name: msg.pushName || jid.split('@')[0],
-              timestamp: (msg.messageTimestamp as number) || Date.now() / 1000,
+              timestamp: (msg.messageTimestamp as number) || Math.floor(Date.now() / 1000),
               unreadCount: 0,
               messages: [],
               assignedTo: null,
@@ -811,7 +811,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
           }
 
           chats[chatKey].lastMessage = text;
-          chats[chatKey].timestamp = (msg.messageTimestamp as number) || Date.now() / 1000;
+          chats[chatKey].timestamp = (msg.messageTimestamp as number) || Math.floor(Date.now() / 1000);
           
           const msgExists = chats[chatKey].messages.some((existingMsg: any) => existingMsg.key.id === msg.key.id);
           if (!msgExists) {
@@ -1278,9 +1278,17 @@ app.prepare().then(async () => {
       const sentMsg = await session.sock.sendMessage(jid, msgPayload, options);
       if (chats[chatKey]) {
         chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
+        chats[chatKey].timestamp = (sentMsg as any).messageTimestamp || Math.floor(Date.now() / 1000);
         chats[chatKey].messages.push(sentMsg);
         if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
       }
+
+      // Update DB timestamp
+      await prisma.chat.update({
+          where: { id: chatKey },
+          data: { timestamp: new Date() }
+      }).catch(err => console.error('Failed to update chat timestamp in DB:', err));
+
       emitToRelevantUsers(io, 'whatsapp:message', { ...sentMsg, sessionId: targetSessionId, chatKey });
       res.json(sentMsg);
     } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
