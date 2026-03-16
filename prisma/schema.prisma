@@ -60,6 +60,8 @@ model Message {
   mediaUrl         String?
   mediaType        String?
   fileName         String?
+  quotedMessageId  String?
+  quotedMessageText String?
   
   chat             Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   contact          Contact  @relation(fields: [jid], references: [id], onDelete: Cascade)

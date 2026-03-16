@@ -21,6 +21,8 @@ interface Message {
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'audio' | 'document';
   fileName?: string;
+  quotedMessageId?: string;
+  quotedMessageText?: string;
   sessionId?: string;
   chatKey?: string;
 }
@@ -124,6 +126,7 @@ function ChatContent() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -332,15 +335,17 @@ function ChatContent() {
     if ((!messageInput.trim() && !selectedFile) || !selectedChatId) return;
     const text = messageInput;
     const file = selectedFile;
+    const quotedId = replyingTo?.key.id;
     setMessageInput(''); 
     clearSelectedFile();
+    setReplyingTo(null);
     const sendRequest = async (body: any) => {
       try {
         const res = await fetch('/api/whatsapp/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!res.ok) { const data = await res.json(); alert(data.error || 'Falha ao enviar'); }
       } catch (err) { console.error('Falha ao enviar:', err); }
     };
-    const commonBody = { jid: selectedChat!.id, sessionId: selectedChat!.sessionId, text };
+    const commonBody = { jid: selectedChat!.id, sessionId: selectedChat!.sessionId, text, quotedMessageId: quotedId };
     if (file) {
       const reader = new FileReader(); reader.readAsDataURL(file);
       reader.onload = async () => {
@@ -462,9 +467,30 @@ function ChatContent() {
                 const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
                 if (!text && !msg.mediaUrl) return null;
                 return (
-                  <div key={msg.key.id} className={cn("flex flex-col max-w-[70%]", isMe ? "ml-auto items-end" : "items-start")}>
-                    <div className={cn("px-4 py-2 rounded-2xl text-sm shadow-sm overflow-hidden", isMe ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white text-zinc-900 rounded-tl-none border border-zinc-200")}>
-                      {msg.mediaUrl && msg.mediaType === 'image' && (
+                  <div key={msg.key.id} className={cn("flex flex-col max-w-[70%] group", isMe ? "ml-auto items-end" : "items-start")}>
+                    <div className="flex items-center gap-2 w-full">
+                      {!isMe && (
+                        <button 
+                          onClick={() => setReplyingTo(msg)}
+                          className="p-1.5 bg-white border border-zinc-200 rounded-full text-zinc-400 opacity-0 group-hover:opacity-100 transition-all hover:text-emerald-600 hover:border-emerald-200 shadow-sm"
+                          title="Responder"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <div className={cn("px-4 py-2 rounded-2xl text-sm shadow-sm overflow-hidden flex-1", isMe ? "bg-emerald-600 text-white rounded-tr-none" : "bg-white text-zinc-900 rounded-tl-none border border-zinc-200")}>
+                        {(msg.quotedMessageId || msg.quotedMessageText) && (
+                          <div className={cn(
+                            "mb-2 p-2 rounded-lg border-l-4 text-xs",
+                            isMe ? "bg-white/10 border-white/40 text-white/90" : "bg-zinc-50 border-emerald-500 text-zinc-500"
+                          )}>
+                            <p className="font-bold mb-0.5">Mensagem respondida</p>
+                            <p className="truncate italic">
+                              {msg.quotedMessageText || (msg.quotedMessageId ? 'Mídia' : '')}
+                            </p>
+                          </div>
+                        )}
+                        {msg.mediaUrl && msg.mediaType === 'image' && (
                         <img 
                           src={msg.mediaUrl} 
                           alt="Foto" 
@@ -500,8 +526,18 @@ function ChatContent() {
                       )}
                       {text && <p className={cn(msg.mediaUrl && "mt-2")}>{text}</p>}
                     </div>
-                    <span className="text-[10px] text-zinc-400 mt-1">{new Date(msg.messageTimestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    {isMe && (
+                      <button 
+                        onClick={() => setReplyingTo(msg)}
+                        className="p-1.5 bg-white border border-zinc-200 rounded-full text-zinc-400 opacity-0 group-hover:opacity-100 transition-all hover:text-emerald-600 hover:border-emerald-200 shadow-sm"
+                        title="Responder"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
+                  <span className="text-[10px] text-zinc-400 mt-1">{new Date(msg.messageTimestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
                 );
               })}
               <div ref={messagesEndRef} />
@@ -521,6 +557,29 @@ function ChatContent() {
               ) : (
                 <>
                   <AnimatePresence>
+                    {replyingTo && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        className="mb-4 p-3 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center gap-3 relative"
+                      >
+                        <div className="w-1 h-10 bg-emerald-500 rounded-full shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Respondendo para {replyingTo.key.fromMe ? 'você' : (replyingTo.pushName || 'Contato')}</p>
+                          <p className="text-sm text-zinc-600 truncate italic">
+                            {replyingTo.message?.conversation || replyingTo.message?.extendedTextMessage?.text || (replyingTo.mediaType ? `Mídia (${replyingTo.mediaType})` : 'Mensagem')}
+                          </p>
+                        </div>
+                        <button 
+                          type="button" 
+                          onClick={() => setReplyingTo(null)}
+                          className="p-2 text-zinc-400 hover:text-zinc-600 transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </motion.div>
+                    )}
                     {selectedFile && (
                       <motion.div 
                         initial={{ opacity: 0, y: 10 }}

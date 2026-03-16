@@ -287,7 +287,12 @@ async function syncFromDb() {
                     key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe },
                     message: m.text ? { conversation: m.text } : {},
                     messageTimestamp: m.messageTimestamp,
-                    status: m.status
+                    status: m.status,
+                    mediaUrl: m.mediaUrl,
+                    mediaType: m.mediaType,
+                    fileName: m.fileName,
+                    quotedMessageId: m.quotedMessageId,
+                    quotedMessageText: m.quotedMessageText
                 }))
             };
         }
@@ -758,6 +763,18 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                        (msg.message?.audioMessage ? '🎤 Áudio' : '') ||
                        (msg.message?.documentMessage ? '📄 Documento' : '') || '';
           
+          const quotedMessageId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId || 
+                                 msg.message?.imageMessage?.contextInfo?.stanzaId ||
+                                 msg.message?.videoMessage?.contextInfo?.stanzaId ||
+                                 msg.message?.audioMessage?.contextInfo?.stanzaId ||
+                                 msg.message?.documentMessage?.contextInfo?.stanzaId;
+          
+          const quotedMessageText = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
+                                   msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text;
+
+          msg.quotedMessageId = quotedMessageId;
+          msg.quotedMessageText = quotedMessageText;
+
           if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.videoMessage || msg.message?.audioMessage) {
             try {
               const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
@@ -816,7 +833,9 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     status: msg.status || 0,
                     mediaUrl: msg.mediaUrl,
                     mediaType: msg.mediaType,
-                    fileName: msg.fileName
+                    fileName: msg.fileName,
+                    quotedMessageId: quotedMessageId,
+                    quotedMessageText: quotedMessageText
                 }
             });
           }
@@ -1228,7 +1247,7 @@ app.prepare().then(async () => {
   });
 
   expressApp.post('/api/whatsapp/send', authenticate, async (req: any, res) => {
-    const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId } = req.body;
+    const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId, quotedMessageId } = req.body;
     let jid = normalizeJid(rawJid);
     let targetSessionId = sessionId;
     if (!targetSessionId) {
@@ -1247,7 +1266,16 @@ app.prepare().then(async () => {
 
     try {
       let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
-      const sentMsg = await session.sock.sendMessage(jid, msgPayload);
+      
+      let options: any = {};
+      if (quotedMessageId && chats[chatKey]) {
+        const quotedMsg = chats[chatKey].messages.find((m: any) => m.key.id === quotedMessageId);
+        if (quotedMsg) {
+          options.quoted = quotedMsg;
+        }
+      }
+
+      const sentMsg = await session.sock.sendMessage(jid, msgPayload, options);
       if (chats[chatKey]) {
         chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
         chats[chatKey].messages.push(sentMsg);
