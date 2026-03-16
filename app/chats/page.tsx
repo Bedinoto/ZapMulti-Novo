@@ -172,16 +172,16 @@ function ChatContent() {
     }
 
     // Som de notificação - Tenta local primeiro, depois fallbacks externos
-    const audio = new Audio('/sounds/notification.mp3');
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/933/933-preview.mp3');
     audio.volume = 0.6;
     audio.preload = 'auto';
     audio.crossOrigin = 'anonymous';
     notificationSound.current = audio;
 
     const fallbacks = [
+      'https://assets.mixkit.co/active_storage/sfx/933/933-preview.mp3',
       'https://cdn.pixabay.com/audio/2022/03/15/audio_78390a2431.mp3',
-      'https://www.soundjay.com/buttons/sounds/button-09a.mp3',
-      'https://assets.mixkit.io/active_storage/sfx/2354/2354-preview.mp3'
+      'https://www.soundjay.com/buttons/sounds/button-09a.mp3'
     ];
     let currentFallbackIndex = 0;
 
