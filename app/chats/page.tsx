@@ -171,19 +171,29 @@ function ChatContent() {
       setChatSettings(JSON.parse(savedSettings));
     }
 
-    // Som de notificação mais curto e compatível
-    const audio = new Audio('https://cdn.pixabay.com/audio/2022/03/15/audio_78390a2431.mp3');
+    // Som de notificação - Tenta local primeiro, depois fallbacks externos
+    const audio = new Audio('/sounds/notification.mp3');
     audio.volume = 0.6;
     audio.preload = 'auto';
     audio.crossOrigin = 'anonymous';
     notificationSound.current = audio;
 
+    const fallbacks = [
+      'https://cdn.pixabay.com/audio/2022/03/15/audio_78390a2431.mp3',
+      'https://www.soundjay.com/buttons/sounds/button-09a.mp3',
+      'https://assets.mixkit.io/active_storage/sfx/2354/2354-preview.mp3'
+    ];
+    let currentFallbackIndex = 0;
+
     audio.addEventListener('error', (e) => {
-      console.error('Erro detalhado ao carregar áudio:', e);
-      console.log('Tentando fallback para outro som...');
-      if (notificationSound.current) {
-        notificationSound.current.src = 'https://www.soundjay.com/buttons/sounds/button-09a.mp3';
-        notificationSound.current.load();
+      console.error('Erro ao carregar áudio:', audio.src, e);
+      if (currentFallbackIndex < fallbacks.length) {
+        console.log(`Tentando fallback ${currentFallbackIndex + 1}...`);
+        audio.src = fallbacks[currentFallbackIndex];
+        currentFallbackIndex++;
+        audio.load();
+      } else {
+        console.error('Todos os fallbacks de áudio falharam.');
       }
     });
 
@@ -247,7 +257,7 @@ function ChatContent() {
           if (notificationSound.current) {
             notificationSound.current.currentTime = 0;
             notificationSound.current.play().catch(err => {
-              console.warn('Reprodução de áudio bloqueada ou falhou.', err);
+              console.warn('Reprodução de áudio automática bloqueada pelo navegador.', err);
             });
           }
         }
@@ -418,9 +428,18 @@ function ChatContent() {
             <div className="flex items-center gap-2">
               <button 
                 onClick={() => {
-                  notificationSound.current?.play()
-                    .then(() => setAudioUnlocked(true))
-                    .catch(err => showToast('Erro ao tocar som. Por favor, clique em qualquer lugar da página primeiro e tente novamente.', 'error'));
+                  if (notificationSound.current) {
+                    notificationSound.current.currentTime = 0;
+                    notificationSound.current.play()
+                      .then(() => {
+                        setAudioUnlocked(true);
+                        showToast('Som reproduzido com sucesso!', 'success');
+                      })
+                      .catch(err => {
+                        console.error('Erro ao testar som:', err);
+                        showToast('Erro ao tocar som. Clique na página e tente novamente.', 'error');
+                      });
+                  }
                 }}
                 className={cn(
                   "text-[10px] px-2 py-1 rounded-lg transition-all flex items-center gap-1 shadow-sm",
