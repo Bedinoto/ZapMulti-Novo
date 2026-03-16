@@ -153,16 +153,10 @@ function ChatContent() {
       setChatSettings(JSON.parse(savedSettings));
     }
 
-    // Som de notificação mais confiável
-    const audio = new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3');
+    // Som de notificação mais curto e compatível
+    const audio = new Audio('https://raw.githubusercontent.com/rafael-lua/files/main/notification.mp3');
     audio.volume = 0.6;
     audio.preload = 'auto';
-    
-    audio.addEventListener('error', (e) => {
-      console.error('Erro ao carregar áudio de notificação:', e);
-      // Fallback para outro som se necessário
-    });
-
     notificationSound.current = audio;
 
     // Tenta carregar o áudio
