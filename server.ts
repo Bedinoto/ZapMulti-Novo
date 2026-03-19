@@ -73,15 +73,25 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
     if (!jid || jid === 'status@broadcast' || jid.includes('@broadcast')) return;
     
     try {
-        // Baileys stores mappings both ways: PN -> LID and LID -> PN
-        // We look up the provided JID to see if it has a corresponding other ID
-        const mappings = await state.keys.get('lid-mapping', [jid]);
+        // Use cache if available to reduce I/O
+        let otherJidRaw = lidMappings[jid];
         
-        if (mappings && mappings[jid]) {
-            const value = mappings[jid];
-            const otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
-            if (!otherJidRaw) return;
-
+        if (!otherJidRaw) {
+            // Baileys stores mappings both ways: PN -> LID and LID -> PN
+            // We look up the provided JID to see if it has a corresponding other ID
+            const mappings = await state.keys.get('lid-mapping', [jid]);
+            
+            if (mappings && mappings[jid]) {
+                const value = mappings[jid];
+                otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
+                if (otherJidRaw) {
+                    lidMappings[jid] = otherJidRaw;
+                    lidMappings[otherJidRaw] = jid; // Store both ways
+                }
+            }
+        }
+        
+        if (otherJidRaw) {
             const jid1 = normalizeJid(jid);
             const jid2 = normalizeJid(otherJidRaw);
             
@@ -197,7 +207,7 @@ async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io
 }
 
 const logger = pino({ 
-  level: 'info',
+  level: 'warn',
   timestamp: () => `,"time":"${new Date().toISOString()}"`,
   hooks: {
     logMethod(inputArgs, method, level) {
@@ -210,7 +220,9 @@ const logger = pino({
                     'intentional logout',
                     'stream errored',
                     'stream errored out',
-                    'qr refs attempts ended'
+                    'qr refs attempts ended',
+                    'history sync',
+                    'peer-data-request'
                 ];
                 
                 if (suppressStrings.some(s => stringified.includes(s))) return;
@@ -232,6 +244,7 @@ interface Session {
 const sessions: Record<string, Session> = {};
 const chats: Record<string, any> = {};
 const contacts: Record<string, any> = {};
+const lidMappings: Record<string, string> = {}; // Cache for LID -> PN and PN -> LID mappings
 
 function emitToRelevantUsers(io: Server, event: string, data: any) {
     if (event === 'whatsapp:message' || event === 'whatsapp:chat-updated' || event === 'whatsapp:chat-deleted') {
@@ -501,13 +514,17 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             let jid = normalizeJid(chat.id);
             
             // Try to resolve LID to PN immediately if possible
+            let resolved = false;
             if (jid.includes('lid')) {
                 try {
                     const mapping = await state.keys.get('lid-mapping', [jid]);
                     if (mapping && mapping[jid]) {
                         const data = mapping[jid];
                         let pn = typeof data === 'string' ? data : (data as any)?.pn;
-                        if (pn) jid = normalizeJid(pn);
+                        if (pn) {
+                            jid = normalizeJid(pn);
+                            resolved = true;
+                        }
                     }
                 } catch (e) {}
             }
@@ -530,8 +547,10 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                 if (chat.unreadCount) chats[chatKey].unreadCount = chat.unreadCount;
             }
 
-            // Check if we need to merge after upserting
-            await mergeChatsIfNeeded(sessionId, jid, state, io);
+            // Only check for merge if we actually resolved something or it's a new LID
+            if (resolved || chat.id.includes('@lid')) {
+                await mergeChatsIfNeeded(sessionId, jid, state, io);
+            }
         }
     });
 
@@ -544,7 +563,11 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                 if (update.name) chats[chatKey].name = update.name;
                 if (update.unreadCount) chats[chatKey].unreadCount = update.unreadCount;
             }
-            await mergeChatsIfNeeded(sessionId, jid, state, io);
+            
+            // Only merge if it's a LID update that might have mapping info
+            if (update.id.includes('@lid')) {
+                await mergeChatsIfNeeded(sessionId, jid, state, io);
+            }
         }
     });
 
@@ -556,9 +579,13 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
                 
                 // Try to resolve PN for LID contacts
+                let resolved = false;
                 if (jid.endsWith('@lid')) {
                     const resolvedPn = await resolvePn(jid, state);
-                    if (resolvedPn) pnJid = normalizeJid(resolvedPn);
+                    if (resolvedPn) {
+                        pnJid = normalizeJid(resolvedPn);
+                        resolved = true;
+                    }
                 }
 
                 const targetJid = pnJid || jid;
@@ -573,7 +600,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                         source: 'automatic'
                     };
                     
-                    // DB Save
+                    // DB Save - Only if not in memory (synced from DB at startup)
                     await prisma.contact.upsert({
                         where: { id: targetJid },
                         update: {
@@ -588,7 +615,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                             lastInteraction: new Date(),
                             source: 'automatic'
                         }
-                    });
+                    }).catch(() => {});
 
                     emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
                 } else {
@@ -605,7 +632,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                         emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
                     }
                 }
-            if (contact.id) {
+            if (contact.id && (resolved || contact.id.includes('@lid'))) {
                 await mergeChatsIfNeeded(sessionId, contact.id, state, io);
             }
         }
@@ -616,13 +643,17 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
             let jid = normalizeJid(update.id);
             
             // Try to resolve PN for LID contacts to find the correct contact to update
+            let resolved = false;
             if (jid.endsWith('@lid')) {
                 try {
                     const mapping = await state.keys.get('lid-mapping', [jid]);
                     if (mapping && mapping[jid]) {
                         const data = mapping[jid];
                         const pn = typeof data === 'string' ? data : (data as any)?.pn;
-                        if (pn) jid = normalizeJid(pn);
+                        if (pn) {
+                            jid = normalizeJid(pn);
+                            resolved = true;
+                        }
                     }
                 } catch (e) {
                     console.error('LID resolution failed in contacts.update', e);
@@ -635,7 +666,7 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[jid]);
                 }
             }
-            if (update.id) {
+            if (update.id && (resolved || update.id.includes('@lid'))) {
                 await mergeChatsIfNeeded(sessionId, update.id, state, io);
             }
         }
@@ -712,7 +743,14 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 
                 emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
             } else {
-                contacts[targetJid].lastInteraction = Date.now();
+                const now = Date.now();
+                const lastInteraction = contacts[targetJid].lastInteraction || 0;
+                
+                // Only update lastInteraction in DB if it's been more than 5 minutes
+                // to reduce DB write frequency
+                const shouldUpdateInteraction = (now - lastInteraction) > 5 * 60 * 1000;
+                
+                contacts[targetJid].lastInteraction = now;
                 let needsUpdate = false;
                 if (phoneNumber && !contacts[targetJid].phoneNumber) {
                     contacts[targetJid].phoneNumber = phoneNumber;
@@ -723,17 +761,19 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     needsUpdate = true;
                 }
 
-                // DB Update
-                await prisma.contact.update({
-                    where: { id: targetJid },
-                    data: {
-                        lastInteraction: new Date(),
-                        ...(needsUpdate ? {
-                            name: contacts[targetJid].name,
-                            phoneNumber: contacts[targetJid].phoneNumber
-                        } : {})
-                    }
-                });
+                if (shouldUpdateInteraction || needsUpdate) {
+                    // DB Update
+                    await prisma.contact.update({
+                        where: { id: targetJid },
+                        data: {
+                            lastInteraction: new Date(),
+                            ...(needsUpdate ? {
+                                name: contacts[targetJid].name,
+                                phoneNumber: contacts[targetJid].phoneNumber
+                            } : {})
+                        }
+                    }).catch(err => console.error('Failed to update contact in DB:', err));
+                }
 
                 emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
             }
@@ -741,21 +781,32 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 
           const chatKey = `${sessionId}--${targetJid}`;
           
-          // DB Chat Upsert
-          await prisma.chat.upsert({
-              where: { id: chatKey },
-              update: {
-                  timestamp: new Date(),
-                  name: contacts[targetJid]?.name || targetJid.split('@')[0]
-              },
-              create: {
-                  id: chatKey,
-                  sessionId,
-                  jid: targetJid,
-                  name: contacts[targetJid]?.name || targetJid.split('@')[0],
-                  timestamp: new Date()
+          // DB Chat Upsert - Only if it doesn't exist in memory or name changed
+          if (!chats[chatKey] || (contacts[targetJid]?.name && chats[chatKey].name !== contacts[targetJid].name)) {
+              await prisma.chat.upsert({
+                  where: { id: chatKey },
+                  update: {
+                      timestamp: new Date(),
+                      name: contacts[targetJid]?.name || targetJid.split('@')[0]
+                  },
+                  create: {
+                      id: chatKey,
+                      sessionId,
+                      jid: targetJid,
+                      name: contacts[targetJid]?.name || targetJid.split('@')[0],
+                      timestamp: new Date()
+                  }
+              }).catch(err => console.error('Failed to upsert chat in DB:', err));
+          } else {
+              // Just update timestamp in DB periodically (every 5 mins)
+              const lastTs = chats[chatKey].timestamp || 0;
+              if (Math.floor(Date.now() / 1000) - lastTs > 300) {
+                  await prisma.chat.update({
+                      where: { id: chatKey },
+                      data: { timestamp: new Date() }
+                  }).catch(err => {});
               }
-          });
+          }
 
           const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
                        (msg.message?.imageMessage ? '📷 Foto' : '') ||
@@ -775,27 +826,6 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
           msg.quotedMessageId = quotedMessageId;
           msg.quotedMessageText = quotedMessageText;
 
-          if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.videoMessage || msg.message?.audioMessage) {
-            try {
-              const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-              let extension = 'bin';
-              let type = 'document';
-              if (msg.message.imageMessage) { extension = 'jpeg'; type = 'image'; }
-              else if (msg.message.videoMessage) { extension = 'mp4'; type = 'video'; }
-              else if (msg.message.audioMessage) { extension = 'ogg'; type = 'audio'; }
-              else if (msg.message.documentMessage) { extension = 'bin'; type = 'document'; }
-
-              const fileName = `${msg.key.id}.${extension}`;
-              const filePath = path.join(mediaDir, fileName);
-              fs.writeFileSync(filePath, buffer);
-              msg.mediaUrl = `/media/${fileName}`;
-              msg.mediaType = type;
-              msg.fileName = msg.message.documentMessage?.fileName;
-            } catch (err) {
-              console.error('Failed to download media:', err);
-            }
-          }
-
           if (!chats[chatKey]) {
             chats[chatKey] = {
               id: jid,
@@ -812,9 +842,31 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 
           chats[chatKey].lastMessage = text;
           chats[chatKey].timestamp = (msg.messageTimestamp as number) || Math.floor(Date.now() / 1000);
-          
+
           const msgExists = chats[chatKey].messages.some((existingMsg: any) => existingMsg.key.id === msg.key.id);
           if (!msgExists) {
+            // Download media only for new messages
+            if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.videoMessage || msg.message?.audioMessage) {
+              try {
+                const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+                let extension = 'bin';
+                let type = 'document';
+                if (msg.message.imageMessage) { extension = 'jpeg'; type = 'image'; }
+                else if (msg.message.videoMessage) { extension = 'mp4'; type = 'video'; }
+                else if (msg.message.audioMessage) { extension = 'ogg'; type = 'audio'; }
+                else if (msg.message.documentMessage) { extension = 'bin'; type = 'document'; }
+
+                const fileName = `${msg.key.id}.${extension}`;
+                const filePath = path.join(mediaDir, fileName);
+                fs.writeFileSync(filePath, buffer);
+                msg.mediaUrl = `/media/${fileName}`;
+                msg.mediaType = type;
+                msg.fileName = msg.message.documentMessage?.fileName;
+              } catch (err) {
+                console.error('Failed to download media:', err);
+              }
+            }
+
             chats[chatKey].messages.push(msg);
             if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
 
@@ -837,11 +889,15 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
                     quotedMessageId: quotedMessageId,
                     quotedMessageText: quotedMessageText
                 }
-            });
+            }).catch(err => console.error('Failed to save message in DB:', err));
           }
 
           emitToRelevantUsers(io, 'whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
-          await mergeChatsIfNeeded(sessionId, jid, state, io);
+          
+          // Only merge if it's a LID message that might have mapping info
+          if (rawJid.includes('@lid')) {
+            await mergeChatsIfNeeded(sessionId, jid, state, io);
+          }
         }
       }
     });
