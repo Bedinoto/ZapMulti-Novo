@@ -1,30 +1,22 @@
 import { createServer } from 'node:http';
 import { parse } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
 import next from 'next';
 import express from 'express';
 import { Server } from 'socket.io';
-import makeWASocket, { 
-  DisconnectReason, 
-  useMultiFileAuthState as makeMultiFileAuthState, 
-  fetchLatestBaileysVersion,
-  jidNormalizedUser,
-  downloadMediaMessage,
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import pino from 'pino';
-import fs from 'node:fs';
-import path from 'node:path';
-import QRCode from 'qrcode';
-import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import * as cookie from 'cookie';
+import cookieParser from 'cookie-parser';
+import cookie from 'cookie';
+import { uazapi } from './lib/uazapi';
 import { prisma } from './lib/prisma';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
 const port = 3000;
+const UAZAPI_INSTANCE_NAME = process.env.UAZAPI_INSTANCE_NAME || 'default';
 
 // Handle Next.js import for ESM
 const nextApp = (next as any).default || next;
@@ -42,7 +34,9 @@ process.on('unhandledRejection', (reason, promise) => {
 
 function normalizeJid(rawJid: string): string {
     if (!rawJid) return '';
-    let jid = jidNormalizedUser(rawJid);
+    let jid = rawJid.toLowerCase();
+    if (jid.includes(':')) jid = jid.split(':')[0] + (jid.includes('@') ? '@' + jid.split('@')[1] : '');
+    if (!jid.includes('@')) jid += '@s.whatsapp.net';
     if (jid.endsWith('@c.us')) jid = jid.replace('@c.us', '@s.whatsapp.net');
     return jid;
 }
@@ -54,197 +48,128 @@ function getPhoneNumberFromJid(jid: string): string {
     return '';
 }
 
-async function resolvePn(jid: string, state: any): Promise<string | null> {
-    if (!jid || !jid.endsWith('@lid')) return null;
-    try {
-        const mapping = await state.keys.get('lid-mapping', [jid]);
-        if (mapping && mapping[jid]) {
-            const data = mapping[jid];
-            const pn = typeof data === 'string' ? data : (data as any)?.pn;
-            return pn ? jidNormalizedUser(pn) : null;
-        }
-    } catch (e) {
-        console.error('Error resolving PN:', e);
-    }
-    return null;
-}
-
-async function mergeChatsIfNeeded(sessionId: string, jid: string, state: any, io: Server) {
-    if (!jid || jid === 'status@broadcast' || jid.includes('@broadcast')) return;
-    
-    try {
-        // Use cache if available to reduce I/O
-        let otherJidRaw = lidMappings[jid];
-        
-        if (!otherJidRaw) {
-            // Baileys stores mappings both ways: PN -> LID and LID -> PN
-            // We look up the provided JID to see if it has a corresponding other ID
-            const mappings = await state.keys.get('lid-mapping', [jid]);
-            
-            if (mappings && mappings[jid]) {
-                const value = mappings[jid];
-                otherJidRaw = typeof value === 'string' ? value : (value as any)?.pn || (value as any)?.lid;
-                if (otherJidRaw) {
-                    lidMappings[jid] = otherJidRaw;
-                    lidMappings[otherJidRaw] = jid; // Store both ways
-                }
-            }
-        }
-        
-        if (otherJidRaw) {
-            const jid1 = normalizeJid(jid);
-            const jid2 = normalizeJid(otherJidRaw);
-            
-            const chatKey1 = `${sessionId}--${jid1}`;
-            const chatKey2 = `${sessionId}--${jid2}`;
-            
-            if (chatKey1 === chatKey2) return;
-
-            // Determine which one is LID and which is PN
-            const isJid1Lid = jid1.includes('@lid');
-            const lidKey = isJid1Lid ? chatKey1 : chatKey2;
-            const pnKey = isJid1Lid ? chatKey2 : chatKey1;
-            const lidJid = isJid1Lid ? jid1 : jid2;
-            const pnJid = isJid1Lid ? jid2 : jid1;
-
-            // Case 1: Both chats exist, merge them
-            if (chats[lidKey] && chats[pnKey]) {
-                console.log(`Merging LID chat ${lidKey} into PN chat ${pnKey}`);
-                
-                // Merge messages
-                const mergedMessages = [
-                    ...chats[pnKey].messages,
-                    ...chats[lidKey].messages
-                ].sort((a, b) => (a.messageTimestamp as number) - (b.messageTimestamp as number));
-                
-                // Deduplicate
-                const seen = new Set();
-                chats[pnKey].messages = mergedMessages.filter((m: any) => {
-                    if (seen.has(m.key.id)) return false;
-                    seen.add(m.key.id);
-                    return true;
-                });
-
-                // Update last message and timestamp if LID has newer info
-                if (chats[lidKey].timestamp > chats[pnKey].timestamp) {
-                    chats[pnKey].timestamp = chats[lidKey].timestamp;
-                    chats[pnKey].lastMessage = chats[lidKey].lastMessage;
-                }
-
-                // Delete the LID chat and notify clients
-                delete chats[lidKey];
-                
-                // DB Update
-                await prisma.chat.deleteMany({ where: { id: lidKey } });
-                await prisma.message.updateMany({
-                    where: { chatId: lidKey },
-                    data: { chatId: pnKey }
-                });
-
-                emitToRelevantUsers(io, 'whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
-                emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[pnKey]);
-            } 
-            // Case 2: Only LID chat exists, rename it to PN
-            else if (chats[lidKey] && !chats[pnKey]) {
-                console.log(`Renaming LID chat ${lidKey} to PN chat ${pnKey}`);
-                chats[pnKey] = { ...chats[lidKey], id: pnJid, key: pnKey };
-                delete chats[lidKey];
-
-                // DB Update
-                await prisma.chat.update({
-                    where: { id: lidKey },
-                    data: { id: pnKey, jid: pnJid }
-                });
-
-                emitToRelevantUsers(io, 'whatsapp:chat-deleted', { jid: lidJid, chatKey: lidKey });
-                emitToRelevantUsers(io, 'whatsapp:chat-updated', chats[pnKey]);
-            }
-
-            // --- Contact Merging ---
-            if (contacts[lidJid] && contacts[pnJid]) {
-                console.log(`Merging LID contact ${lidJid} into PN contact ${pnJid}`);
-                if (contacts[lidJid].lastInteraction > contacts[pnJid].lastInteraction) {
-                    contacts[pnJid].lastInteraction = contacts[lidJid].lastInteraction;
-                }
-                // Keep the best name
-                if (contacts[lidJid].name && contacts[lidJid].name !== lidJid.split('@')[0]) {
-                    if (!contacts[pnJid].name || contacts[pnJid].name === pnJid.split('@')[0]) {
-                        contacts[pnJid].name = contacts[lidJid].name;
-                    }
-                }
-                delete contacts[lidJid];
-
-                // DB Update
-                await prisma.contact.delete({ where: { id: lidJid } });
-                await prisma.contact.update({
-                    where: { id: pnJid },
-                    data: {
-                        name: contacts[pnJid].name,
-                        lastInteraction: new Date(contacts[pnJid].lastInteraction)
-                    }
-                });
-
-                emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: lidJid });
-                emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[pnJid]);
-            } else if (contacts[lidJid] && !contacts[pnJid]) {
-                console.log(`Renaming LID contact ${lidJid} to PN contact ${pnJid}`);
-                contacts[pnJid] = { ...contacts[lidJid], id: pnJid, phoneNumber: pnJid.split('@')[0] };
-                delete contacts[lidJid];
-
-                // DB Update
-                await prisma.contact.update({
-                    where: { id: lidJid },
-                    data: { id: pnJid, phoneNumber: pnJid.split('@')[0] }
-                });
-
-                emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: lidJid });
-                emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[pnJid]);
-            }
-        }
-    } catch (e) {
-        console.error('Error in mergeChatsIfNeeded:', e);
-    }
-}
-
-const logger = pino({ 
-  level: 'warn',
-  timestamp: () => `,"time":"${new Date().toISOString()}"`,
-  hooks: {
-    logMethod(inputArgs, method, level) {
-            if (inputArgs.length >= 1) {
-                const stringified = JSON.stringify(inputArgs).toLowerCase();
-                const suppressStrings = [
-                    'bad mac',
-                    'no matching sessions',
-                    'failed to decrypt message',
-                    'intentional logout',
-                    'stream errored',
-                    'stream errored out',
-                    'qr refs attempts ended',
-                    'history sync',
-                    'peer-data-request'
-                ];
-                
-                if (suppressStrings.some(s => stringified.includes(s))) return;
-            }
-            return method.apply(this, inputArgs as [string, ...any[]]);
-    }
-  }
-});
-
 interface Session {
   id: string;
-  sock: any;
-  state?: any;
-  qrCode: string | null;
   status: 'connecting' | 'connected' | 'disconnected' | 'qr';
+  qrCode: string | null;
   userInfo: any;
 }
 
 const sessions: Record<string, Session> = {};
 const chats: Record<string, any> = {};
 const contacts: Record<string, any> = {};
-const lidMappings: Record<string, string> = {}; // Cache for LID -> PN and PN -> LID mappings
+const syncedSessions = new Set<string>();
+
+async function updateUazapiStatus(io: Server) {
+  try {
+    const sessionId = UAZAPI_INSTANCE_NAME;
+    console.log(`Updating status for session ${sessionId}...`);
+    let status;
+    try {
+      status = await uazapi.getStatus();
+      console.log(`Status for ${sessionId}:`, JSON.stringify(status));
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        console.warn(`Instance ${sessionId} not found (404). Setting status to disconnected.`);
+        status = {
+          instance: { status: 'disconnected', qrcode: null },
+          status: { loggedIn: false }
+        };
+      } else {
+        throw err;
+      }
+    }
+    
+    if (!sessions[sessionId]) {
+      sessions[sessionId] = {
+        id: sessionId,
+        status: 'disconnected',
+        qrCode: null,
+        userInfo: null
+      };
+    }
+
+    const oldStatus = sessions[sessionId].status;
+    sessions[sessionId].status = status.instance.status === 'connected' ? 'connected' : (status.instance.qrcode ? 'qr' : 'disconnected');
+    sessions[sessionId].qrCode = status.instance.qrcode || null;
+    
+    if (status.status.loggedIn && status.status.jid) {
+      sessions[sessionId].userInfo = {
+        id: normalizeJid(`${status.status.jid.user}@${status.status.jid.server}`),
+        name: status.instance.profileName || status.instance.name
+      };
+
+      // Sync chats if connected and not yet synced in this session
+      if (sessions[sessionId].status === 'connected' && !syncedSessions.has(sessionId)) {
+        console.log(`Syncing chats for session ${sessionId}...`);
+        try {
+          const remoteChatsResponse = await uazapi.getChats();
+          console.log(`Remote chats response for ${sessionId} (keys):`, Object.keys(remoteChatsResponse || {}));
+          
+          let remoteChats = [];
+          if (Array.isArray(remoteChatsResponse)) {
+            remoteChats = remoteChatsResponse;
+          } else if (remoteChatsResponse && typeof remoteChatsResponse === 'object') {
+            remoteChats = remoteChatsResponse.chats || remoteChatsResponse.data || remoteChatsResponse.instances || [];
+          }
+          
+          if (Array.isArray(remoteChats)) {
+            console.log(`Received ${remoteChats.length} chats from remote for session ${sessionId}`);
+            for (const chat of remoteChats) {
+              const targetJid = normalizeJid(chat.id || chat.jid || chat.remoteJid);
+              if (!targetJid) continue;
+              
+              const chatKey = `${sessionId}--${targetJid}`;
+              if (!chats[chatKey]) {
+                const chatName = chat.name || chat.pushname || chat.pushName || chat.verifiedName || targetJid.split('@')[0];
+                chats[chatKey] = {
+                  id: targetJid,
+                  sessionId,
+                  key: chatKey,
+                  name: chatName,
+                  unreadCount: chat.unreadCount || chat.unread || 0,
+                  timestamp: Math.floor(Date.now() / 1000),
+                  messages: []
+                };
+                
+                // Save to DB
+                await prisma.chat.upsert({
+                  where: { id: chatKey },
+                  update: { name: chats[chatKey].name },
+                  create: {
+                    id: chatKey,
+                    sessionId,
+                    jid: targetJid,
+                    name: chats[chatKey].name,
+                    timestamp: new Date()
+                  }
+                }).catch(e => console.error('Error saving synced chat to DB:', e));
+              }
+            }
+            syncedSessions.add(sessionId);
+            console.log(`Synced ${Object.keys(chats).filter(k => k.startsWith(sessionId)).length} chats for session ${sessionId}.`);
+            emitToRelevantUsers(io, 'whatsapp:chats-synced', { sessionId });
+          } else {
+            console.warn(`Could not find chats array in response for session ${sessionId}:`, JSON.stringify(remoteChatsResponse).substring(0, 200));
+          }
+        } catch (err) {
+          console.error('Error syncing remote chats:', err);
+        }
+      }
+    }
+
+    if (oldStatus !== sessions[sessionId].status) {
+      emitToRelevantUsers(io, 'whatsapp:session-status', { 
+        sessionId, 
+        status: sessions[sessionId].status,
+        qr: sessions[sessionId].qrCode,
+        user: sessions[sessionId].userInfo
+      });
+    }
+  } catch (error) {
+    console.error('Error updating uazapi status:', error);
+  }
+}
 
 function emitToRelevantUsers(io: Server, event: string, data: any) {
     if (event === 'whatsapp:message' || event === 'whatsapp:chat-updated' || event === 'whatsapp:chat-deleted') {
@@ -290,6 +215,7 @@ async function syncFromDb() {
             const chatKey = c.id;
             chats[chatKey] = {
                 id: c.jid,
+                sessionId: c.sessionId,
                 key: chatKey,
                 name: c.name,
                 unreadCount: c.unreadCount,
@@ -321,592 +247,159 @@ if (!fs.existsSync(mediaDir)) {
 }
 
 async function connectToWhatsApp(io: Server, sessionId: string) {
-  if (!sessions[sessionId]) {
-    sessions[sessionId] = {
-      id: sessionId,
-      sock: null,
-      qrCode: null,
-      status: 'connecting',
-      userInfo: null
-    };
-  }
-
-  sessions[sessionId].status = 'connecting';
-  emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'connecting' });
-
   try {
-    const authPath = `auth_info_baileys_${sessionId}`;
-    const { state, saveCreds } = await makeMultiFileAuthState(authPath);
-    sessions[sessionId].state = state;
-    const { version } = await fetchLatestBaileysVersion();
-    
-    const sock = makeWASocket({
-      version,
-      printQRInTerminal: true,
-      auth: state,
-      logger,
-      browser: ['WhatsApp Manager', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 10000,
-      retryRequestDelayMs: 2000,
-      syncFullHistory: false,
-      generateHighQualityLinkPreview: true,
-      patchMessageBeforeSending: (message) => {
-        const requiresPatch = !!(
-            message.buttonsMessage ||
-            message.templateMessage ||
-            message.listMessage
-        );
-        if (requiresPatch) {
-            message = {
-                viewOnceMessage: {
-                    message: {
-                        messageContextInfo: {
-                            deviceListMetadataVersion: 2,
-                            deviceListMetadata: {},
-                        },
-                        ...message,
-                    },
-                },
-            };
-        }
-        return message;
-      },
-      getMessage: async (key) => {
-        if (!key.remoteJid) return undefined;
-        let jid = jidNormalizedUser(key.remoteJid);
-        
-        if (jid.endsWith('@lid')) {
-            try {
-                const mapping = await state.keys.get('lid-mapping', [jid]);
-                if (mapping && mapping[jid]) {
-                    const data = mapping[jid];
-                    let pn = typeof data === 'string' ? data : (data as any)?.pn;
-                    if (pn) jid = jidNormalizedUser(pn);
-                }
-            } catch (e) {
-                console.error('LID resolution failed in getMessage', e);
-            }
-        }
-
-        jid = normalizeJid(jid);
-
-        const chatKey = `${sessionId}--${jid}`;
-        if (chats[chatKey]) {
-            const msg = chats[chatKey].messages.find((m: any) => m.key.id === key.id);
-            return msg?.message || undefined;
-        }
-        return undefined;
-      },
-    });
-
-    sessions[sessionId].sock = sock;
-
-    sock.ev.on('connection.update', async (update: any) => {
-      const { connection, lastDisconnect, qr } = update;
-      if (!sessions[sessionId]) return;
-
-      if (qr) {
-        sessions[sessionId].qrCode = await QRCode.toDataURL(qr);
-        sessions[sessionId].status = 'qr';
-        emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'qr', qr: sessions[sessionId].qrCode });
-      }
-
-      if (connection === 'close') {
-        const error = lastDisconnect?.error;
-        const statusCode = (error as Boom)?.output?.statusCode;
-        const errorMessage = (error as any)?.message || '';
-        const isLoggedOut = statusCode === DisconnectReason.loggedOut || errorMessage === 'Intentional Logout';
-        const isQrExpired = errorMessage.includes('QR refs attempts ended');
-        const shouldReconnect = !isLoggedOut;
-        
-        if (isLoggedOut) {
-            console.log(`Session ${sessionId} logged out intentionally`);
-            if (sessions[sessionId]) {
-                sessions[sessionId].status = 'disconnected';
-                emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected' });
-            }
-        } else {
-            if (isQrExpired) {
-                console.log(`Session ${sessionId} QR code expired (attempts ended)`);
-                if (sessions[sessionId]) {
-                    sessions[sessionId].qrCode = null;
-                    emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected', error: 'QR_EXPIRED' });
-                }
-            }
-
-            const isStreamError = errorMessage.includes('Stream Errored');
-            const isBadMac = errorMessage.toLowerCase().includes('bad mac');
-
-            if (isBadMac) {
-                console.log(`Bad MAC detected for session ${sessionId}, clearing session folders to repair...`);
-                try {
-                    const authPath = `auth_info_baileys_${sessionId}`;
-                    const sessionPath = path.join(process.cwd(), authPath, 'sessions');
-                    const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
-                    
-                    if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                    if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
-                    
-                    console.log(`Session folders cleared for ${sessionId}. Reconnecting...`);
-                } catch (e) {
-                    console.error('Failed to clear session folders on Bad MAC', e);
-                }
-            }
-
-            if (!isStreamError && !isQrExpired) {
-                console.log(`Session ${sessionId} connection closed due to `, error, ', reconnecting ', shouldReconnect);
-            }
-            
-            if (sessions[sessionId]) {
-                sessions[sessionId].status = 'disconnected';
-                emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected' });
-            }
-            
-            if (shouldReconnect) {
-              setTimeout(() => {
-                if (sessions[sessionId]) connectToWhatsApp(io, sessionId);
-              }, 2000);
-            }
-        }
-      } else if (connection === 'open') {
-        sessions[sessionId].status = 'connected';
-        sessions[sessionId].qrCode = null;
-        if (sock.user) {
-          sessions[sessionId].userInfo = { ...sock.user, id: normalizeJid(sock.user.id) };
-        }
-        emitToRelevantUsers(io, 'whatsapp:session-status', { 
-          sessionId, 
-          status: 'connected', 
-          user: sessions[sessionId].userInfo 
-        });
-      }
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    // Handle stream errors which often include Bad MAC or decryption issues
-    sock.ev.on('stream-error', (err) => {
-        const errorMessage = err?.message || '';
-        console.error(`Stream error in session ${sessionId}:`, errorMessage);
-        
-        if (errorMessage.toLowerCase().includes('bad mac')) {
-            console.log(`Bad MAC detected in stream for session ${sessionId}, clearing session folders...`);
-            try {
-                const authPath = `auth_info_baileys_${sessionId}`;
-                const sessionPath = path.join(process.cwd(), authPath, 'sessions');
-                const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
-                
-                if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
-                
-                // Force a reconnect
-                sock.end(undefined);
-            } catch (e) {
-                console.error('Failed to clear session folders on stream Bad MAC', e);
-            }
-        }
-    });
-
-    sock.ev.on('chats.upsert', async (newChats) => {
-        for (const chat of newChats) {
-            if (!chat.id) continue;
-            let jid = normalizeJid(chat.id);
-            
-            // Try to resolve LID to PN immediately if possible
-            let resolved = false;
-            if (jid.includes('lid')) {
-                try {
-                    const mapping = await state.keys.get('lid-mapping', [jid]);
-                    if (mapping && mapping[jid]) {
-                        const data = mapping[jid];
-                        let pn = typeof data === 'string' ? data : (data as any)?.pn;
-                        if (pn) {
-                            jid = normalizeJid(pn);
-                            resolved = true;
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            if (jid.includes('@broadcast') || jid === 'status@broadcast') continue;
-
-            const chatKey = `${sessionId}--${jid}`;
-            if (!chats[chatKey]) {
-                chats[chatKey] = {
-                    id: jid,
-                    sessionId,
-                    key: chatKey,
-                    name: chat.name || jid.split('@')[0],
-                    timestamp: Number(chat.conversationTimestamp) || Math.floor(Date.now() / 1000),
-                    unreadCount: chat.unreadCount || 0,
-                    messages: []
-                };
-            } else {
-                if (chat.name) chats[chatKey].name = chat.name;
-                if (chat.unreadCount) chats[chatKey].unreadCount = chat.unreadCount;
-            }
-
-            // Only check for merge if we actually resolved something or it's a new LID
-            if (resolved || chat.id.includes('@lid')) {
-                await mergeChatsIfNeeded(sessionId, jid, state, io);
-            }
-        }
-    });
-
-    sock.ev.on('chats.update', async (updates) => {
-        for (const update of updates) {
-            if (!update.id) continue;
-            const jid = normalizeJid(update.id);
-            const chatKey = `${sessionId}--${jid}`;
-            if (chats[chatKey]) {
-                if (update.name) chats[chatKey].name = update.name;
-                if (update.unreadCount) chats[chatKey].unreadCount = update.unreadCount;
-            }
-            
-            // Only merge if it's a LID update that might have mapping info
-            if (update.id.includes('@lid')) {
-                await mergeChatsIfNeeded(sessionId, jid, state, io);
-            }
-        }
-    });
-
-    sock.ev.on('contacts.upsert', async (newContacts) => {
-        for (const contact of newContacts) {
-            let jid = normalizeJid(contact.id);
-            if (!jid || jid === 'status@broadcast' || jid.includes('@broadcast') || jid.includes('@g.us')) continue;
-            
-            let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
-                
-                // Try to resolve PN for LID contacts
-                let resolved = false;
-                if (jid.endsWith('@lid')) {
-                    const resolvedPn = await resolvePn(jid, state);
-                    if (resolvedPn) {
-                        pnJid = normalizeJid(resolvedPn);
-                        resolved = true;
-                    }
-                }
-
-                const targetJid = pnJid || jid;
-                const phoneNumber = getPhoneNumberFromJid(pnJid || '');
-
-                if (!contacts[targetJid]) {
-                    contacts[targetJid] = {
-                        id: targetJid,
-                        name: contact.name || contact.notify || contact.verifiedName || (phoneNumber || targetJid.split('@')[0]),
-                        phoneNumber: phoneNumber,
-                        lastInteraction: Date.now(),
-                        source: 'automatic'
-                    };
-                    
-                    // DB Save - Only if not in memory (synced from DB at startup)
-                    await prisma.contact.upsert({
-                        where: { id: targetJid },
-                        update: {
-                            name: contacts[targetJid].name,
-                            phoneNumber: phoneNumber,
-                            lastInteraction: new Date()
-                        },
-                        create: {
-                            id: targetJid,
-                            name: contacts[targetJid].name,
-                            phoneNumber: phoneNumber,
-                            lastInteraction: new Date(),
-                            source: 'automatic'
-                        }
-                    }).catch(() => {});
-
-                    emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
-                } else {
-                    // Update existing contact if we found a phone number now
-                    if (phoneNumber && !contacts[targetJid].phoneNumber) {
-                        contacts[targetJid].phoneNumber = phoneNumber;
-                        
-                        // DB Update
-                        await prisma.contact.update({
-                            where: { id: targetJid },
-                            data: { phoneNumber: phoneNumber }
-                        });
-
-                        emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
-                    }
-                }
-            if (contact.id && (resolved || contact.id.includes('@lid'))) {
-                await mergeChatsIfNeeded(sessionId, contact.id, state, io);
-            }
-        }
-    });
-
-    sock.ev.on('contacts.update', async (updates) => {
-        for (const update of updates) {
-            let jid = normalizeJid(update.id);
-            
-            // Try to resolve PN for LID contacts to find the correct contact to update
-            let resolved = false;
-            if (jid.endsWith('@lid')) {
-                try {
-                    const mapping = await state.keys.get('lid-mapping', [jid]);
-                    if (mapping && mapping[jid]) {
-                        const data = mapping[jid];
-                        const pn = typeof data === 'string' ? data : (data as any)?.pn;
-                        if (pn) {
-                            jid = normalizeJid(pn);
-                            resolved = true;
-                        }
-                    }
-                } catch (e) {
-                    console.error('LID resolution failed in contacts.update', e);
-                }
-            }
-
-            if (jid && contacts[jid]) {
-                if (update.name || update.notify || update.verifiedName) {
-                    contacts[jid].name = update.name || update.notify || update.verifiedName || contacts[jid].name;
-                    emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[jid]);
-                }
-            }
-            if (update.id && (resolved || update.id.includes('@lid'))) {
-                await mergeChatsIfNeeded(sessionId, update.id, state, io);
-            }
-        }
-    });
-
-    sock.ev.on('messages.upsert', async (m: any) => {
-      if (m.type === 'notify') {
-        for (const msg of m.messages) {
-          // Check for decryption failure or Bad MAC
-          const isDecryptionFailure = msg.messageStubType === 1 || (msg.message && Object.keys(msg.message).length === 0);
-          
-          if (isDecryptionFailure) {
-            const jid = msg.key.remoteJid;
-            if (jid) {
-                console.log(`Decryption failure detected for ${jid}, attempting session repair...`);
-                try {
-                    // Clear both session and sender-key to force a full re-negotiation
-                    await state.keys.set({ 
-                        'session': { [jid]: null },
-                        'sender-key': { [jid]: null }
-                    });
-                    
-                    // Also try to resync if it's a critical failure
-                    if (sock.resyncMainAppState) {
-                        await sock.resyncMainAppState();
-                    }
-                } catch (e) {
-                    console.error('Failed to repair session', e);
-                }
-            }
-          }
-
-          let rawJid = msg.key.remoteJid;
-          if (!rawJid || rawJid === 'status@broadcast' || rawJid.includes('@broadcast')) continue;
-          
-          let jid = jidNormalizedUser(rawJid);
-          let pnJid = jid.endsWith('@s.whatsapp.net') ? jid : null;
-
-          if (jid.endsWith('@lid')) {
-            const resolvedPn = await resolvePn(jid, state);
-            if (resolvedPn) pnJid = jidNormalizedUser(resolvedPn);
-          }
-
-          const targetJid = normalizeJid(pnJid || jid);
-          const phoneNumber = getPhoneNumberFromJid(pnJid || '');
-
-          // Automatic contact saving
-          if (targetJid && !targetJid.includes('@g.us')) {
-            if (!contacts[targetJid]) {
-                contacts[targetJid] = {
-                    id: targetJid,
-                    name: msg.pushName || (phoneNumber || targetJid.split('@')[0]),
-                    phoneNumber: phoneNumber,
-                    lastInteraction: Date.now(),
-                    source: 'automatic'
-                };
-
-                // DB Save
-                await prisma.contact.upsert({
-                    where: { id: targetJid },
-                    update: {
-                        name: contacts[targetJid].name,
-                        phoneNumber: phoneNumber,
-                        lastInteraction: new Date()
-                    },
-                    create: {
-                        id: targetJid,
-                        name: contacts[targetJid].name,
-                        phoneNumber: phoneNumber,
-                        lastInteraction: new Date(),
-                        source: 'automatic'
-                    }
-                });
-
-                emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
-            } else {
-                const now = Date.now();
-                const lastInteraction = contacts[targetJid].lastInteraction || 0;
-                
-                // Only update lastInteraction in DB if it's been more than 5 minutes
-                // to reduce DB write frequency
-                const shouldUpdateInteraction = (now - lastInteraction) > 5 * 60 * 1000;
-                
-                contacts[targetJid].lastInteraction = now;
-                let needsUpdate = false;
-                if (phoneNumber && !contacts[targetJid].phoneNumber) {
-                    contacts[targetJid].phoneNumber = phoneNumber;
-                    needsUpdate = true;
-                }
-                if (msg.pushName && (contacts[targetJid].name === targetJid.split('@')[0] || !contacts[targetJid].name)) {
-                    contacts[targetJid].name = msg.pushName;
-                    needsUpdate = true;
-                }
-
-                if (shouldUpdateInteraction || needsUpdate) {
-                    // DB Update
-                    await prisma.contact.update({
-                        where: { id: targetJid },
-                        data: {
-                            lastInteraction: new Date(),
-                            ...(needsUpdate ? {
-                                name: contacts[targetJid].name,
-                                phoneNumber: contacts[targetJid].phoneNumber
-                            } : {})
-                        }
-                    }).catch(err => console.error('Failed to update contact in DB:', err));
-                }
-
-                emitToRelevantUsers(io, 'whatsapp:contact-updated', contacts[targetJid]);
-            }
-          }
-
-          const chatKey = `${sessionId}--${targetJid}`;
-          
-          // DB Chat Upsert - Only if it doesn't exist in memory or name changed
-          if (!chats[chatKey] || (contacts[targetJid]?.name && chats[chatKey].name !== contacts[targetJid].name)) {
-              await prisma.chat.upsert({
-                  where: { id: chatKey },
-                  update: {
-                      timestamp: new Date(),
-                      name: contacts[targetJid]?.name || targetJid.split('@')[0]
-                  },
-                  create: {
-                      id: chatKey,
-                      sessionId,
-                      jid: targetJid,
-                      name: contacts[targetJid]?.name || targetJid.split('@')[0],
-                      timestamp: new Date()
-                  }
-              }).catch(err => console.error('Failed to upsert chat in DB:', err));
-          } else {
-              // Just update timestamp in DB periodically (every 5 mins)
-              const lastTs = chats[chatKey].timestamp || 0;
-              if (Math.floor(Date.now() / 1000) - lastTs > 300) {
-                  await prisma.chat.update({
-                      where: { id: chatKey },
-                      data: { timestamp: new Date() }
-                  }).catch(err => {});
-              }
-          }
-
-          const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 
-                       (msg.message?.imageMessage ? '📷 Foto' : '') ||
-                       (msg.message?.videoMessage ? '🎥 Vídeo' : '') ||
-                       (msg.message?.audioMessage ? '🎤 Áudio' : '') ||
-                       (msg.message?.documentMessage ? '📄 Documento' : '') || '';
-          
-          const quotedMessageId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId || 
-                                 msg.message?.imageMessage?.contextInfo?.stanzaId ||
-                                 msg.message?.videoMessage?.contextInfo?.stanzaId ||
-                                 msg.message?.audioMessage?.contextInfo?.stanzaId ||
-                                 msg.message?.documentMessage?.contextInfo?.stanzaId;
-          
-          const quotedMessageText = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation ||
-                                   msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text;
-
-          msg.quotedMessageId = quotedMessageId;
-          msg.quotedMessageText = quotedMessageText;
-
-          if (!chats[chatKey]) {
-            chats[chatKey] = {
-              id: jid,
-              sessionId: sessionId,
-              key: chatKey,
-              name: msg.pushName || jid.split('@')[0],
-              timestamp: (msg.messageTimestamp as number) || Math.floor(Date.now() / 1000),
-              unreadCount: 0,
-              messages: [],
-              assignedTo: null,
-              assignedToName: null
-            };
-          }
-
-          chats[chatKey].lastMessage = text;
-          chats[chatKey].timestamp = (msg.messageTimestamp as number) || Math.floor(Date.now() / 1000);
-
-          const msgExists = chats[chatKey].messages.some((existingMsg: any) => existingMsg.key.id === msg.key.id);
-          if (!msgExists) {
-            // Download media only for new messages
-            if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.videoMessage || msg.message?.audioMessage) {
-              try {
-                const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-                let extension = 'bin';
-                let type = 'document';
-                if (msg.message.imageMessage) { extension = 'jpeg'; type = 'image'; }
-                else if (msg.message.videoMessage) { extension = 'mp4'; type = 'video'; }
-                else if (msg.message.audioMessage) { extension = 'ogg'; type = 'audio'; }
-                else if (msg.message.documentMessage) { extension = 'bin'; type = 'document'; }
-
-                const fileName = `${msg.key.id}.${extension}`;
-                const filePath = path.join(mediaDir, fileName);
-                fs.writeFileSync(filePath, buffer);
-                msg.mediaUrl = `/media/${fileName}`;
-                msg.mediaType = type;
-                msg.fileName = msg.message.documentMessage?.fileName;
-              } catch (err) {
-                console.error('Failed to download media:', err);
-              }
-            }
-
-            chats[chatKey].messages.push(msg);
-            if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
-
-            // DB Message Save
-            await prisma.message.upsert({
-                where: { id: msg.key.id! },
-                update: { status: msg.status || 0 },
-                create: {
-                    id: msg.key.id!,
-                    chatId: chatKey,
-                    jid: targetJid,
-                    fromMe: msg.key.fromMe || false,
-                    text: text,
-                    messageTimestamp: msg.messageTimestamp as number,
-                    timestamp: new Date((msg.messageTimestamp as number) * 1000),
-                    status: msg.status || 0,
-                    mediaUrl: msg.mediaUrl,
-                    mediaType: msg.mediaType,
-                    fileName: msg.fileName,
-                    quotedMessageId: quotedMessageId,
-                    quotedMessageText: quotedMessageText
-                }
-            }).catch(err => console.error('Failed to save message in DB:', err));
-          }
-
-          emitToRelevantUsers(io, 'whatsapp:message', { ...msg, sessionId, chatKey, key: { ...msg.key, remoteJid: jid } });
-          
-          // Only merge if it's a LID message that might have mapping info
-          if (rawJid.includes('@lid')) {
-            await mergeChatsIfNeeded(sessionId, jid, state, io);
-          }
-        }
-      }
-    });
-  } catch (err) {
-    console.error(`Failed to connect to WhatsApp session ${sessionId}:`, err);
-    if (sessions[sessionId]) {
-        sessions[sessionId].status = 'disconnected';
-        emitToRelevantUsers(io, 'whatsapp:session-status', { sessionId, status: 'disconnected', error: 'Failed to connect' });
+    await updateUazapiStatus(io);
+    // If disconnected, try to connect to get QR or start session
+    if (sessions[sessionId]?.status === 'disconnected') {
+      await uazapi.connect();
+      await updateUazapiStatus(io);
     }
+    
+    // Update webhook URL if needed
+    const webhookUrl = process.env.UAZAPI_WEBHOOK_URL;
+    if (webhookUrl) {
+      await uazapi.updateWebhook(webhookUrl);
+    }
+  } catch (error) {
+    console.error('Error connecting to uazapi:', error);
+  }
+}
+
+async function handleUazapiWebhook(io: Server, payload: any) {
+  const { event, instance, data } = payload;
+  const sessionId = instance || payload.instanceName || payload.instance_name || UAZAPI_INSTANCE_NAME;
+
+  console.log(`Webhook received: ${event} for session ${sessionId}`);
+
+  if (event === 'connection' || event === 'connection.update') {
+    await updateUazapiStatus(io);
+  } else if (event === 'messages' || event === 'messages.upsert' || event === 'messages.set') {
+    const messages = Array.isArray(data) ? data : (data?.messages || [data]);
+    console.log(`Processing ${messages.length} messages from event ${event} for session ${sessionId}`);
+    
+    for (const msg of messages) {
+      if (!msg || !msg.key) continue;
+
+      const rawJid = msg.key.remoteJid;
+      if (!rawJid || rawJid === 'status@broadcast' || rawJid.includes('@broadcast')) continue;
+
+      const targetJid = normalizeJid(rawJid);
+      const chatKey = `${sessionId}--${targetJid}`;
+
+      // Basic message info
+      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
+      const timestamp = msg.messageTimestamp ? Number(msg.messageTimestamp) : Math.floor(Date.now() / 1000);
+
+      // Upsert Contact
+      if (!contacts[targetJid]) {
+        contacts[targetJid] = {
+          id: targetJid,
+          name: msg.pushName || msg.pushname || targetJid.split('@')[0],
+          phoneNumber: getPhoneNumberFromJid(targetJid),
+          lastInteraction: Date.now(),
+          source: 'automatic'
+        };
+        await prisma.contact.upsert({
+          where: { id: targetJid },
+          update: { lastInteraction: new Date() },
+          create: {
+            id: targetJid,
+            name: contacts[targetJid].name,
+            phoneNumber: contacts[targetJid].phoneNumber,
+            lastInteraction: new Date(),
+            source: 'automatic'
+          }
+        }).catch(e => console.error('Error saving contact to DB:', e));
+        emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
+      }
+
+      // Upsert Chat
+      if (!chats[chatKey]) {
+        chats[chatKey] = {
+          id: targetJid,
+          sessionId,
+          key: chatKey,
+          name: contacts[targetJid].name,
+          timestamp,
+          unreadCount: 0,
+          messages: []
+        };
+        await prisma.chat.upsert({
+          where: { id: chatKey },
+          update: { timestamp: new Date() },
+          create: {
+            id: chatKey,
+            sessionId,
+            jid: targetJid,
+            name: chats[chatKey].name,
+            timestamp: new Date()
+          }
+        }).catch(e => console.error('Error saving chat to DB:', e));
+      }
+
+      chats[chatKey].lastMessage = text;
+      chats[chatKey].timestamp = timestamp;
+
+      // Save Message
+      await prisma.message.upsert({
+        where: { id: msg.key.id },
+        update: { status: msg.status || 0 },
+        create: {
+          id: msg.key.id,
+          chatId: chatKey,
+          jid: targetJid,
+          fromMe: msg.key.fromMe || false,
+          text: text,
+          messageTimestamp: timestamp,
+          timestamp: new Date(timestamp * 1000),
+          status: msg.status || 0,
+          mediaUrl: msg.mediaUrl,
+          mediaType: msg.mediaType,
+          fileName: msg.fileName
+        }
+      }).catch(e => console.error('Error saving message to DB:', e));
+
+      // Add to in-memory messages if not exists
+      const msgExists = chats[chatKey].messages.some((m: any) => m.key.id === msg.key.id);
+      if (!msgExists) {
+        chats[chatKey].messages.push(msg);
+        if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
+      }
+
+      emitToRelevantUsers(io, 'whatsapp:message', { ...msg, sessionId, chatKey });
+    }
+  } else if (event === 'chats.set' || event === 'chats.upsert') {
+    // Handle bulk chat sync if provided by webhook
+    const remoteChats = Array.isArray(data) ? data : (data?.chats || []);
+    console.log(`Bulk syncing ${remoteChats.length} chats from webhook...`);
+    for (const chat of remoteChats) {
+      const targetJid = normalizeJid(chat.id || chat.jid);
+      if (!targetJid) continue;
+      const chatKey = `${sessionId}--${targetJid}`;
+      if (!chats[chatKey]) {
+        chats[chatKey] = {
+          id: targetJid,
+          sessionId,
+          key: chatKey,
+          name: chat.name || chat.pushname || chat.pushName || targetJid.split('@')[0],
+          unreadCount: chat.unreadCount || 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          messages: []
+        };
+        await prisma.chat.upsert({
+          where: { id: chatKey },
+          update: { name: chats[chatKey].name },
+          create: {
+            id: chatKey,
+            sessionId,
+            jid: targetJid,
+            name: chats[chatKey].name,
+            timestamp: new Date()
+          }
+        }).catch(e => console.error('Error saving chat from webhook to DB:', e));
+      }
+    }
+    emitToRelevantUsers(io, 'whatsapp:chats-synced', { sessionId });
   }
 }
 
@@ -1053,6 +546,16 @@ app.prepare().then(async () => {
 
   expressApp.get('/api/connections', authenticate, (req: any, res) => {
     res.json(Object.values(sessions).map(s => ({ id: s.id, status: s.status, qrCode: s.qrCode, userInfo: s.userInfo })));
+  });
+
+  expressApp.post('/api/uazapi/webhook', async (req, res) => {
+    try {
+      await handleUazapiWebhook(io, req.body);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error handling uazapi webhook:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   expressApp.get('/api/contacts', authenticate, (req, res) => {
@@ -1233,20 +736,18 @@ app.prepare().then(async () => {
   });
 
   expressApp.post('/api/connections', authenticate, (req: any, res) => {
-    const sessionId = Date.now().toString();
-    connectToWhatsApp(io, sessionId);
-    res.json({ success: true, sessionId });
+    connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
+    res.json({ success: true, sessionId: UAZAPI_INSTANCE_NAME });
   });
 
   expressApp.delete('/api/connections/:id', authenticate, async (req: any, res) => {
     const { id } = req.params;
     if (sessions[id]) {
       try {
-        if (sessions[id].sock) { await sessions[id].sock.logout(); sessions[id].sock.end(undefined); }
-      } catch (e: any) { if (e?.message !== 'Intentional Logout') console.error('Error logging out', e); }
+        await uazapi.logout();
+        await updateUazapiStatus(io);
+      } catch (e: any) { console.error('Error logging out', e); }
       delete sessions[id];
-      const authPath = path.join(process.cwd(), `auth_info_baileys_${id}`);
-      if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
       emitToRelevantUsers(io, 'whatsapp:session-removed', { sessionId: id });
       res.json({ success: true });
     } else res.status(404).json({ error: 'Session not found' });
@@ -1257,85 +758,49 @@ app.prepare().then(async () => {
     if (sessions[id]) {
       console.log(`Manual repair requested for session ${id}`);
       
-      // 1. Stop current socket
-      if (sessions[id].sock) {
-        try {
-          sessions[id].sock.end(undefined);
-        } catch (e) {}
+      try {
+        await uazapi.connect();
+        await updateUazapiStatus(io);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: 'Falha ao reparar conexão' });
       }
-      
-      // 2. Clear session and sender-key folders for this specific session
-      const authPath = `auth_info_baileys_${id}`;
-      const sessionPath = path.join(process.cwd(), authPath, 'sessions');
-      const senderKeyPath = path.join(process.cwd(), authPath, 'sender-keys');
-      
-      if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-      if (fs.existsSync(senderKeyPath)) fs.rmSync(senderKeyPath, { recursive: true, force: true });
-      
-      // 3. Reconnect
-      setTimeout(() => {
-        connectToWhatsApp(io, id);
-      }, 1000);
-      
-      res.json({ success: true });
     } else res.status(404).json({ error: 'Session not found' });
   });
 
   expressApp.get('/api/whatsapp/status', authenticate, async (req: any, res) => {
-    // Run a quick merge check for all chats to clean up duplicates
-    const sessionList = Object.values(sessions);
-    for (const session of sessionList) {
-        if (session.state) {
-            const chatKeys = Object.keys(chats).filter(k => k.startsWith(`${session.id}--`));
-            for (const chatKey of chatKeys) {
-                const jid = chatKey.split('--')[1];
-                await mergeChatsIfNeeded(session.id, jid, session.state, io);
-            }
-        }
-    }
+    await updateUazapiStatus(io);
 
     let filteredChats = chats;
     if (req.user.role !== 'admin') {
       filteredChats = Object.fromEntries(Object.entries(chats).filter(([_, chat]: [string, any]) => !chat.assignedTo || chat.assignedTo === req.user.id));
     }
-    const mainSession = sessionList[0] || { status: 'disconnected', qrCode: null, userInfo: null };
+    const mainSession = sessions[UAZAPI_INSTANCE_NAME] || { status: 'disconnected', qrCode: null, userInfo: null };
     res.json({ status: mainSession.status, qr: mainSession.qrCode, user: mainSession.userInfo, chats: filteredChats });
   });
 
   expressApp.post('/api/whatsapp/send', authenticate, async (req: any, res) => {
     const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId, quotedMessageId } = req.body;
     let jid = normalizeJid(rawJid);
-    let targetSessionId = sessionId;
-    if (!targetSessionId) {
-        const chatKey = Object.keys(chats).find(k => k.endsWith(`--${jid}`));
-        if (chatKey) targetSessionId = chats[chatKey].sessionId;
-    }
-    if (!targetSessionId) {
-        const connectedSession = Object.values(sessions).find(s => s.status === 'connected');
-        if (connectedSession) targetSessionId = connectedSession.id;
-    }
+    let targetSessionId = sessionId || UAZAPI_INSTANCE_NAME;
+    
     const session = sessions[targetSessionId];
-    if (!session || !session.sock || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
+    if (!session || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
     const chatKey = `${targetSessionId}--${jid}`;
     const userName = req.user.name || 'Atendente';
     const finalMessage = text ? `*${userName}*\n${text}` : '';
 
     try {
-      let msgPayload: any = media && mediaType ? { [mediaType === 'image' ? 'image' : 'document']: Buffer.from(media.split(',')[1], 'base64'), caption: finalMessage, mimetype: mimeType, fileName } : { text: finalMessage || '' };
-      
-      let options: any = {};
-      let quotedMsg: any = null;
-      if (quotedMessageId && chats[chatKey]) {
-        quotedMsg = chats[chatKey].messages.find((m: any) => m.key.id === quotedMessageId);
-        if (quotedMsg) {
-          options.quoted = quotedMsg;
-        }
+      let sentMsg: any;
+      if (media && mediaType) {
+        sentMsg = await uazapi.sendMedia(jid, media, mediaType === 'image' ? 'image' : 'document', finalMessage, fileName, mimeType);
+      } else {
+        sentMsg = await uazapi.sendText(jid, finalMessage || '');
       }
 
-      const sentMsg = await session.sock.sendMessage(jid, msgPayload, options);
       if (chats[chatKey]) {
         chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
-        chats[chatKey].timestamp = (sentMsg as any).messageTimestamp || Math.floor(Date.now() / 1000);
+        chats[chatKey].timestamp = Math.floor(Date.now() / 1000);
         chats[chatKey].messages.push(sentMsg);
         if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
       }
@@ -1351,7 +816,6 @@ app.prepare().then(async () => {
         sessionId: targetSessionId, 
         chatKey,
         quotedMessageId,
-        quotedMessageText: quotedMsg ? (quotedMsg.message?.conversation || quotedMsg.message?.extendedTextMessage?.text) : undefined
       };
 
       emitToRelevantUsers(io, 'whatsapp:message', emitMsg);
@@ -1363,13 +827,9 @@ app.prepare().then(async () => {
 
   server.listen(port, hostname, async () => {
     console.log(`> Ready on http://${hostname}:${port}`);
-    
-    const files = fs.readdirSync(process.cwd());
-    const authFolders = files.filter(f => f.startsWith('auth_info_baileys_'));
-    if (authFolders.length === 0) connectToWhatsApp(io, 'default');
-    else authFolders.forEach(folder => connectToWhatsApp(io, folder.replace('auth_info_baileys_', '')));
+    connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
   });
-}).catch((err) => {
+}).catch((err: any) => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });

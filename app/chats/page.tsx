@@ -9,6 +9,7 @@ import {
   Play, Pause, Volume2, Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import Image from 'next/image';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
 
@@ -285,11 +286,17 @@ function ChatContent() {
     newSocket.on('whatsapp:chat-deleted', ({ jid, chatKey }) => {
       const keyToDelete = chatKey || jid;
       setChats(prev => { const newChats = { ...prev }; delete newChats[keyToDelete]; return newChats; });
-      if (selectedChatId === keyToDelete) setSelectedChatId(null);
+      setSelectedChatId(prev => (prev === keyToDelete ? null : prev));
     });
 
     newSocket.on('whatsapp:chat-updated', (updatedChat: Chat) => {
       setChats(prev => ({ ...prev, [updatedChat.key || updatedChat.id]: updatedChat }));
+    });
+
+    newSocket.on('whatsapp:chats-synced', () => {
+      fetch('/api/whatsapp/status').then(res => res.json()).then(data => {
+        if (data && data.chats) setChats(data.chats);
+      });
     });
 
     return () => { newSocket.close(); };
@@ -304,9 +311,11 @@ function ChatContent() {
 
   const filteredChats = Object.values(chats)
     .filter(chat => {
+      const chatName = chat.name || '';
+      const chatId = chat.id || '';
       const matchesSearch = 
-        chat.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        chat.id.toLowerCase().includes(searchQuery.toLowerCase());
+        chatName.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        chatId.toLowerCase().includes(searchQuery.toLowerCase());
       if (!currentUser) return false;
       
       if (currentUser.role === 'admin') return matchesSearch;
@@ -584,11 +593,14 @@ function ChatContent() {
                           </div>
                         )}
                         {msg.mediaUrl && msg.mediaType === 'image' && (
-                        <img 
+                        <Image 
                           src={msg.mediaUrl} 
                           alt="Foto" 
+                          width={500}
+                          height={500}
                           className="w-full h-auto max-h-64 object-cover rounded-lg cursor-pointer hover:opacity-90 transition-opacity" 
                           onClick={() => setPreviewImage(msg.mediaUrl || null)} 
+                          referrerPolicy="no-referrer"
                         />
                       )}
                       {msg.mediaUrl && msg.mediaType === 'video' && (
@@ -681,8 +693,8 @@ function ChatContent() {
                         className="mb-4 p-3 bg-zinc-50 rounded-2xl border border-zinc-200 flex items-center gap-3 relative group"
                       >
                         {uploadPreview ? (
-                          <div className="w-16 h-16 rounded-xl overflow-hidden border border-zinc-200 bg-white">
-                            <img src={uploadPreview} alt="Preview" className="w-full h-full object-cover" />
+                          <div className="w-16 h-16 rounded-xl overflow-hidden border border-zinc-200 bg-white relative">
+                            <Image src={uploadPreview} alt="Preview" fill className="object-cover" referrerPolicy="no-referrer" />
                           </div>
                         ) : (
                           <div className="w-16 h-16 rounded-xl bg-white border border-zinc-200 flex items-center justify-center text-zinc-400">

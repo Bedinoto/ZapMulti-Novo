@@ -14,6 +14,7 @@ import {
   MessageSquare,
   QrCode
 } from 'lucide-react';
+import Image from 'next/image';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
 
@@ -178,7 +179,9 @@ export default function ConnectionsPage() {
                     )}
                     {session.status === 'qr' && session.qrCode ? (
                       <div className="flex flex-col items-center p-4 bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
-                        <img src={session.qrCode} alt="QR Code" className="w-48 h-48 mb-4" />
+                        <div className="w-48 h-48 mb-4 relative">
+                          <Image src={session.qrCode} alt="QR Code" fill className="object-contain" referrerPolicy="no-referrer" />
+                        </div>
                         <p className="text-xs text-center text-zinc-500">Escaneie o código com seu WhatsApp para conectar</p>
                       </div>
                     ) : session.status === 'disconnected' && session.error === 'QR_EXPIRED' ? (
@@ -236,7 +239,7 @@ export default function ConnectionsPage() {
                     <QrCode className="w-8 h-8" />
                   </div>
                   <h3 className="text-lg font-bold text-zinc-900">Nenhuma conexão ativa</h3>
-                  <p className="text-zinc-500 mt-2 max-w-xs">Clique no botão "Nova Conexão" para começar a gerenciar seus dispositivos.</p>
+                  <p className="text-zinc-500 mt-2 max-w-xs">Clique no botão &quot;Nova Conexão&quot; para começar a gerenciar seus dispositivos.</p>
                 </div>
               )}
             </div>

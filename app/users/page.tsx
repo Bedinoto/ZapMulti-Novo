@@ -30,7 +30,12 @@ export default function UsersPage() {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserData | null>(null);
-  const [formData, setFormData] = useState({ name: '', email: '', password: '', role: 'agent' as const });
+  const [formData, setFormData] = useState<{
+    name: string;
+    email: string;
+    password: string;
+    role: 'admin' | 'agent';
+  }>({ name: '', email: '', password: '', role: 'agent' });
 
   const fetchUsers = async () => {
     try {

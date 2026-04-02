@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -52,7 +52,7 @@ model Message {
   chatId           String
   jid              String
   fromMe           Boolean
-  text             String?
+  text             String?  @db.Text
   type             String   @default("text")
   timestamp        DateTime @default(now())
   messageTimestamp Int
@@ -61,7 +61,7 @@ model Message {
   mediaType        String?
   fileName         String?
   quotedMessageId  String?
-  quotedMessageText String?
+  quotedMessageText String? @db.Text
   
   chat             Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   contact          Contact  @relation(fields: [jid], references: [id], onDelete: Cascade)
