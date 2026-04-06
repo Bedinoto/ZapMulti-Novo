@@ -37,14 +37,14 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-blue-50 flex items-center justify-center p-6">
       <div className="w-full max-w-md">
         <div className="text-center mb-10">
-          <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-emerald-600/20">
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.1)</h1>
-          <p className="text-zinc-500 mt-2">Acesse sua conta para gerenciar suas conversas</p>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.2)</h1>
+          <p className="text-zinc-500 mt-2">Sincronizado em: {new Date().toLocaleTimeString()}</p>
         </div>
 
         <div className="bg-white p-8 rounded-3xl shadow-xl shadow-zinc-200/50 border border-zinc-100">
