@@ -525,17 +525,30 @@ nextApp.prepare().then(async () => {
 
   expressApp.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie('token', token, { 
-      httpOnly: true, 
-      secure: isProd, // True in production (HTTPS)
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/'
-    });
-    res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+    try {
+      const user = await prisma.user.findUnique({ where: { email } });
+      if (!user || !bcrypt.compareSync(password, user.password)) {
+        return res.status(401).json({ error: 'E-mail ou senha incorretos' });
+      }
+      const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
+      const isProd = process.env.NODE_ENV === 'production';
+      res.cookie('token', token, { 
+        httpOnly: true, 
+        secure: isProd, // True in production (HTTPS)
+        sameSite: isProd ? 'none' : 'lax',
+        path: '/'
+      });
+      res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+    } catch (err: any) {
+      console.error('Login error:', err);
+      // Check if it's a Prisma connection error
+      const isConnError = err.code === 'P2024' || err.code === 'P1001' || err.message.includes('Can\'t reach database');
+      res.status(500).json({ 
+        error: isConnError 
+          ? 'Erro de comunicação com o banco de dados. Verifique se o Host, Usuário e Senha do MySQL estão corretos.' 
+          : 'Erro interno no servidor ao tentar fazer login.' 
+      });
+    }
   });
 
   expressApp.get('/api/auth/me', authenticate, (req: any, res) => res.json(req.user));
