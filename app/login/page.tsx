@@ -43,7 +43,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-emerald-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo</h1>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.1)</h1>
           <p className="text-zinc-500 mt-2">Acesse sua conta para gerenciar suas conversas</p>
         </div>
 
@@ -56,7 +56,7 @@ export default function LoginPage() {
                 <input
                   type="email"
                   required
-                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                   placeholder="seu@email.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -71,7 +71,7 @@ export default function LoginPage() {
                 <input
                   type="password"
                   required
-                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  className="w-full pl-11 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -88,7 +88,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold hover:bg-emerald-700 focus:ring-4 focus:ring-emerald-500/20 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
+              className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 focus:ring-4 focus:ring-blue-500/20 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
             >
               {loading ? 'Entrando...' : 'Entrar na conta'}
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
