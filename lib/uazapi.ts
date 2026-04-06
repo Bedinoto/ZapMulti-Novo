@@ -7,7 +7,7 @@ const INSTANCE_TOKEN = process.env.UAZAPI_INSTANCE_TOKEN;
 const api = axios.create({
   baseURL: SERVER_URL,
   headers: {
-    'apikey': INSTANCE_TOKEN,
+    'token': INSTANCE_TOKEN,
     'instance': INSTANCE_NAME,
     'Content-Type': 'application/json',
   },
@@ -36,7 +36,7 @@ export interface UazapiInstanceStatus {
 export const uazapi = {
   async getStatus(): Promise<UazapiInstanceStatus> {
     try {
-      const response = await api.get(`/instance/info/${INSTANCE_NAME}`);
+      const response = await api.get('/instance/status');
       return response.data;
     } catch (error: any) {
       throw error;
@@ -44,27 +44,35 @@ export const uazapi = {
   },
 
   async getChats() {
-    const response = await api.get(`/chat/fetchChats/${INSTANCE_NAME}`);
-    return response.data;
+    try {
+      const response = await api.get('/chat/list');
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        console.warn('UAZAPI getChats endpoint not found (404). Returning empty array.');
+        return [];
+      }
+      throw error;
+    }
   },
 
   async connect(phone?: string) {
-    const response = await api.post(`/instance/connect/${INSTANCE_NAME}`, { phone });
+    const response = await api.post('/instance/connect', { phone });
     return response.data;
   },
 
   async disconnect() {
-    const response = await api.post(`/instance/disconnect/${INSTANCE_NAME}`);
+    const response = await api.post('/instance/disconnect');
     return response.data;
   },
 
   async logout() {
-    const response = await api.post(`/instance/logout/${INSTANCE_NAME}`);
+    const response = await api.post('/instance/logout');
     return response.data;
   },
 
   async sendText(number: string, text: string, options: any = {}) {
-    const response = await api.post(`/send/text/${INSTANCE_NAME}`, {
+    const response = await api.post('/send/text', {
       number: number.replace(/\D/g, ''),
       text,
       ...options,
@@ -73,7 +81,7 @@ export const uazapi = {
   },
 
   async sendMedia(number: string, file: string, type: 'image' | 'video' | 'audio' | 'document', text?: string, fileName?: string, mimeType?: string) {
-    const response = await api.post(`/send/media/${INSTANCE_NAME}`, {
+    const response = await api.post('/send/media', {
       number: number.replace(/\D/g, ''),
       type,
       file,
@@ -84,12 +92,25 @@ export const uazapi = {
     return response.data;
   },
 
-  async updateWebhook(url: string, events: string[] = ['messages', 'connection']) {
-    const response = await api.put(`/instance/webhook/${INSTANCE_NAME}`, {
+  async updateWebhook(url: string, events: string[] = ['messages', 'messages.upsert', 'messages.update', 'messages.set', 'connection', 'connection.update']) {
+    const response = await api.post('/webhook', {
       url,
       events,
       enabled: true,
-      excludeMessages: ['wasSentByApi'],
+      excludeMessages: [],
+    });
+    return response.data;
+  },
+
+  async createInstance(instanceName: string, token: string) {
+    const response = await axios.post(`${SERVER_URL}/instance/create`, {
+      instanceName,
+      token,
+    }, {
+      headers: {
+        'token': process.env.UAZAPI_ADMIN_TOKEN,
+        'Content-Type': 'application/json',
+      },
     });
     return response.data;
   },

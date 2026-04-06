@@ -15,7 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 
 const menuItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
+  { icon: LayoutDashboard, label: 'Painel', href: '/' },
   { icon: MessageSquare, label: 'Conversas', href: '/chats' },
   { icon: Users, label: 'Contatos', href: '/contacts' },
   { icon: LinkIcon, label: 'Conexões', href: '/connections' },

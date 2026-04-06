@@ -133,10 +133,13 @@ export default function SettingsPage() {
                       </div>
                       <div className="flex items-center gap-4">
                         {item.action}
-                        <button 
+                        <div 
+                          role="button"
+                          tabIndex={0}
                           onClick={() => handleToggle(item.id as keyof typeof settings)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleToggle(item.id as keyof typeof settings)}
                           className={cn(
-                            "w-12 h-6 rounded-full transition-all relative",
+                            "w-12 h-6 rounded-full transition-all relative cursor-pointer",
                             isActive ? "bg-emerald-600" : "bg-zinc-200"
                           )}
                         >
@@ -144,7 +147,7 @@ export default function SettingsPage() {
                             "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
                             isActive ? "right-1" : "left-1"
                           )} />
-                        </button>
+                        </div>
                       </div>
                     </div>
                   );

@@ -19,9 +19,8 @@ const port = 3000;
 const UAZAPI_INSTANCE_NAME = process.env.UAZAPI_INSTANCE_NAME || 'default';
 
 // Handle Next.js import for ESM
-const nextApp = (next as any).default || next;
-const app = nextApp({ dev, hostname, port });
-const handle = app.getRequestHandler();
+const nextApp = next({ dev, hostname, port });
+const handle = nextApp.getRequestHandler();
 
 // Global error handlers to prevent crashes on EPIPE or other unexpected errors
 process.on('uncaughtException', (err) => {
@@ -60,6 +59,30 @@ const chats: Record<string, any> = {};
 const contacts: Record<string, any> = {};
 const syncedSessions = new Set<string>();
 
+function normalizeUazapiMessage(sentMsg: any, jid: string, text: string, mediaType?: string): any {
+    const messageTimestamp = Math.floor((sentMsg.messageTimestamp || Date.now()) / (sentMsg.messageTimestamp > 1000000000000 ? 1000 : 1));
+    
+    return {
+      key: {
+        remoteJid: sentMsg.chatid || jid,
+        fromMe: true,
+        id: sentMsg.messageid || sentMsg.id,
+      },
+      message: mediaType ? {
+        [mediaType === 'image' ? 'imageMessage' : 'documentMessage']: {
+          caption: text,
+        }
+      } : {
+        conversation: text,
+      },
+      messageTimestamp,
+      status: 1,
+      mediaUrl: sentMsg.content?.URL || sentMsg.mediaUrl,
+      mediaType: mediaType,
+      fileName: sentMsg.content?.fileName || sentMsg.fileName,
+    };
+}
+
 async function updateUazapiStatus(io: Server) {
   try {
     const sessionId = UAZAPI_INSTANCE_NAME;
@@ -70,11 +93,18 @@ async function updateUazapiStatus(io: Server) {
       console.log(`Status for ${sessionId}:`, JSON.stringify(status));
     } catch (err: any) {
       if (err.response?.status === 404) {
-        console.warn(`Instance ${sessionId} not found (404). Setting status to disconnected.`);
-        status = {
-          instance: { status: 'disconnected', qrcode: null },
-          status: { loggedIn: false }
-        };
+        console.warn(`Instance ${sessionId} not found (404). Attempting to create...`);
+        try {
+          const createRes = await uazapi.createInstance(sessionId, process.env.UAZAPI_INSTANCE_TOKEN || '');
+          console.log(`Instance ${sessionId} created:`, JSON.stringify(createRes));
+          status = await uazapi.getStatus();
+        } catch (createErr: any) {
+          console.error(`Failed to create instance ${sessionId}:`, createErr.response?.data || createErr.message);
+          status = {
+            instance: { status: 'disconnected', qrcode: null },
+            status: { loggedIn: false }
+          };
+        }
       } else {
         throw err;
       }
@@ -222,6 +252,7 @@ async function syncFromDb() {
                 timestamp: Math.floor(c.timestamp.getTime() / 1000),
                 assignedTo: c.assignedTo,
                 assignedToName: c.assignedToName,
+                lastMessage: c.messages.length > 0 ? (c.messages[c.messages.length - 1].text || (c.messages[c.messages.length - 1].mediaType === 'image' ? '📷 Foto' : '📄 Documento')) : '',
                 messages: c.messages.map(m => ({
                     key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe },
                     message: m.text ? { conversation: m.text } : {},
@@ -254,12 +285,6 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
       await uazapi.connect();
       await updateUazapiStatus(io);
     }
-    
-    // Update webhook URL if needed
-    const webhookUrl = process.env.UAZAPI_WEBHOOK_URL;
-    if (webhookUrl) {
-      await uazapi.updateWebhook(webhookUrl);
-    }
   } catch (error) {
     console.error('Error connecting to uazapi:', error);
   }
@@ -268,6 +293,10 @@ async function connectToWhatsApp(io: Server, sessionId: string) {
 async function handleUazapiWebhook(io: Server, payload: any) {
   const { event, instance, data } = payload;
   const sessionId = instance || payload.instanceName || payload.instance_name || UAZAPI_INSTANCE_NAME;
+
+  // Detailed logging to a file for debugging
+  const logEntry = `[${new Date().toISOString()}] Webhook: ${event} | Session: ${sessionId} | Payload: ${JSON.stringify(payload)}\n`;
+  fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), logEntry);
 
   console.log(`Webhook received: ${event} for session ${sessionId}`);
 
@@ -309,7 +338,11 @@ async function handleUazapiWebhook(io: Server, payload: any) {
             lastInteraction: new Date(),
             source: 'automatic'
           }
-        }).catch(e => console.error('Error saving contact to DB:', e));
+        }).catch(e => {
+          const errLog = `[${new Date().toISOString()}] ERROR saving contact ${targetJid}: ${e.message}\n`;
+          fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+          console.error('Error saving contact to DB:', e);
+        });
         emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
       }
 
@@ -334,7 +367,11 @@ async function handleUazapiWebhook(io: Server, payload: any) {
             name: chats[chatKey].name,
             timestamp: new Date()
           }
-        }).catch(e => console.error('Error saving chat to DB:', e));
+        }).catch(e => {
+          const errLog = `[${new Date().toISOString()}] ERROR saving chat ${chatKey}: ${e.message}\n`;
+          fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+          console.error('Error saving chat to DB:', e);
+        });
       }
 
       chats[chatKey].lastMessage = text;
@@ -357,7 +394,11 @@ async function handleUazapiWebhook(io: Server, payload: any) {
           mediaType: msg.mediaType,
           fileName: msg.fileName
         }
-      }).catch(e => console.error('Error saving message to DB:', e));
+      }).catch(e => {
+        const errLog = `[${new Date().toISOString()}] ERROR saving message ${msg.key.id}: ${e.message}\n`;
+        fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+        console.error('Error saving message to DB:', e);
+      });
 
       // Add to in-memory messages if not exists
       const msgExists = chats[chatKey].messages.some((m: any) => m.key.id === msg.key.id);
@@ -403,7 +444,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
   }
 }
 
-app.prepare().then(async () => {
+nextApp.prepare().then(async () => {
   const expressApp = express();
   const server = createServer(expressApp);
   const io = new Server(server, {
@@ -549,6 +590,7 @@ app.prepare().then(async () => {
   });
 
   expressApp.post('/api/uazapi/webhook', async (req, res) => {
+    console.log(`Webhook route hit: ${req.method} ${req.url}`);
     try {
       await handleUazapiWebhook(io, req.body);
       res.json({ success: true });
@@ -798,28 +840,55 @@ app.prepare().then(async () => {
         sentMsg = await uazapi.sendText(jid, finalMessage || '');
       }
 
+      const normalizedMsg = normalizeUazapiMessage(sentMsg, jid, finalMessage, mediaType);
+
       if (chats[chatKey]) {
         chats[chatKey].lastMessage = finalMessage || (mediaType === 'image' ? '📷 Foto' : '📄 Documento');
-        chats[chatKey].timestamp = Math.floor(Date.now() / 1000);
-        chats[chatKey].messages.push(sentMsg);
-        if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
+        chats[chatKey].timestamp = normalizedMsg.messageTimestamp;
+        
+        const msgExists = chats[chatKey].messages.some((m: any) => m.key.id === normalizedMsg.key.id);
+        if (!msgExists) {
+          chats[chatKey].messages.push(normalizedMsg);
+          if (chats[chatKey].messages.length > 50) chats[chatKey].messages.shift();
+        }
       }
+
+      // Save Message to DB
+      await prisma.message.upsert({
+        where: { id: normalizedMsg.key.id },
+        update: { status: normalizedMsg.status || 0 },
+        create: {
+          id: normalizedMsg.key.id,
+          chatId: chatKey,
+          jid: jid,
+          fromMe: true,
+          text: finalMessage,
+          messageTimestamp: normalizedMsg.messageTimestamp,
+          timestamp: new Date(normalizedMsg.messageTimestamp * 1000),
+          status: normalizedMsg.status || 0,
+          mediaUrl: normalizedMsg.mediaUrl,
+          mediaType: normalizedMsg.mediaType,
+          fileName: normalizedMsg.fileName
+        }
+      }).catch(err => console.error('Failed to save sent message to DB:', err));
 
       // Update DB timestamp
       await prisma.chat.update({
           where: { id: chatKey },
-          data: { timestamp: new Date() }
+          data: { 
+            timestamp: new Date(normalizedMsg.messageTimestamp * 1000)
+          }
       }).catch(err => console.error('Failed to update chat timestamp in DB:', err));
 
       const emitMsg = { 
-        ...sentMsg, 
+        ...normalizedMsg, 
         sessionId: targetSessionId, 
         chatKey,
         quotedMessageId,
       };
 
       emitToRelevantUsers(io, 'whatsapp:message', emitMsg);
-      res.json(sentMsg);
+      res.json(normalizedMsg);
     } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
   });
 

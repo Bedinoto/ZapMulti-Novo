@@ -38,6 +38,11 @@ export default function ContactsPage() {
   const [newContact, setNewContact] = useState({ name: '', phoneNumber: '' });
   const [loading, setLoading] = useState(true);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const fetchContacts = async () => {
     try {
@@ -226,7 +231,7 @@ export default function ContactsPage() {
                         <div className="flex items-center gap-2 text-zinc-600">
                           <Calendar className="w-3.5 h-3.5 opacity-50" />
                           <span className="text-sm font-medium">
-                            {new Date(contact.lastInteraction).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            {isMounted && contact.lastInteraction ? new Date(contact.lastInteraction).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                           </span>
                         </div>
                       </td>

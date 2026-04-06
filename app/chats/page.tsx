@@ -120,6 +120,7 @@ export default function ChatsPage() {
 
 function ChatContent() {
   const searchParams = useSearchParams();
+  const [isMounted, setIsMounted] = useState(false);
   const [chats, setChats] = useState<Record<string, Chat>>({});
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
@@ -144,6 +145,10 @@ function ChatContent() {
     autoAssign: false
   });
   const settingsRef = useRef(chatSettings);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   // Update ref whenever state changes and save to localStorage
   useEffect(() => {
@@ -232,6 +237,7 @@ function ChatContent() {
 
     newSocket.on('whatsapp:message', (msg: any) => {
       console.log('Nova mensagem recebida:', msg);
+      if (!msg?.key) return;
       const jid = msg.key.remoteJid;
       const chatKey = msg.chatKey || jid;
 
@@ -248,7 +254,7 @@ function ChatContent() {
                                msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.extendedTextMessage?.text;
       }
       
-      if (!msg.key.fromMe) {
+      if (msg.key && !msg.key.fromMe) {
         const currentSettings = settingsRef.current;
         console.log('Configurações atuais:', currentSettings);
 
@@ -276,7 +282,7 @@ function ChatContent() {
       setChats(prev => {
         const chat = prev[chatKey] || { id: jid, sessionId: msg.sessionId, key: chatKey, name: msg.pushName || jid.split('@')[0], unreadCount: 0, messages: [] };
         const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
-        const msgExists = chat.messages.some(m => m.key.id === msg.key.id);
+        const msgExists = chat.messages.some(m => m.key?.id === msg.key.id);
         const newMessages = msgExists ? chat.messages : [...chat.messages, msg];
         const newTimestamp = msg.messageTimestamp || Math.floor(Date.now() / 1000);
         return { ...prev, [chatKey]: { ...chat, lastMessage: text, timestamp: newTimestamp, messages: newMessages.slice(-50) } };
@@ -477,7 +483,17 @@ function ChatContent() {
         </div>
         <div className="flex-1 overflow-y-auto">
           {filteredChats.map((chat) => (
-            <button key={chat.key || chat.id} onClick={() => setSelectedChatId(chat.key || chat.id)} className={cn("w-full p-4 flex items-center gap-4 hover:bg-zinc-50 transition-colors border-b border-zinc-50", selectedChatId === (chat.key || chat.id) && "bg-emerald-50/50 hover:bg-emerald-50/50")}>
+            <div 
+              key={chat.key || chat.id} 
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedChatId(chat.key || chat.id)} 
+              onKeyDown={(e) => e.key === 'Enter' && setSelectedChatId(chat.key || chat.id)}
+              className={cn(
+                "w-full p-4 flex items-center gap-4 hover:bg-zinc-50 transition-colors border-b border-zinc-50 cursor-pointer", 
+                selectedChatId === (chat.key || chat.id) && "bg-emerald-50/50 hover:bg-emerald-50/50"
+              )}
+            >
               <div className="w-12 h-12 bg-zinc-100 rounded-full flex items-center justify-center text-zinc-500 shrink-0 relative">
                 <User className="w-6 h-6" />
                 {chat.assignedTo && (
@@ -490,7 +506,7 @@ function ChatContent() {
                 <div className="flex justify-between items-start mb-1">
                   <span className="font-semibold text-zinc-900 truncate">{chat.name || 'Sem nome'}</span>
                   <span className="text-[10px] text-zinc-400 uppercase tracking-wider">
-                    {chat.timestamp && !isNaN(chat.timestamp) && chat.timestamp > 0 
+                    {isMounted && chat.timestamp && !isNaN(chat.timestamp) && chat.timestamp > 0 
                       ? new Date(chat.timestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) 
                       : ''}
                   </span>
@@ -500,7 +516,7 @@ function ChatContent() {
                   <p className="text-[10px] text-emerald-600 font-medium mt-1">Atendido por: {chat.assignedToName}</p>
                 )}
               </div>
-            </button>
+            </div>
           ))}
         </div>
       </div>
@@ -553,6 +569,7 @@ function ChatContent() {
             </div>
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               {selectedChat.messages.map((msg) => {
+                if (!msg?.key) return null;
                 const isMe = msg.key.fromMe;
                 const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage ? '📷 Foto' : '') || (msg.message?.videoMessage ? '🎥 Vídeo' : '') || (msg.message?.audioMessage ? '🎤 Áudio' : '') || (msg.message?.documentMessage ? '📄 Documento' : '') || '';
                 if (!text && !msg.mediaUrl) return null;
@@ -641,7 +658,9 @@ function ChatContent() {
                       </button>
                     )}
                   </div>
-                  <span className="text-[10px] text-zinc-400 mt-1">{new Date(msg.messageTimestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span className="text-[10px] text-zinc-400 mt-1">
+                    {isMounted ? new Date(msg.messageTimestamp * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                  </span>
                 </div>
                 );
               })}
@@ -763,10 +782,13 @@ function ChatContent() {
                     <p className="font-semibold text-zinc-900">Som de Notificação</p>
                     <p className="text-xs text-zinc-500">Tocar um som ao receber novas mensagens</p>
                   </div>
-                  <button 
+                  <div 
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setChatSettings(prev => ({ ...prev, soundEnabled: !prev.soundEnabled }))}
+                    onKeyDown={(e) => e.key === 'Enter' && setChatSettings(prev => ({ ...prev, soundEnabled: !prev.soundEnabled }))}
                     className={cn(
-                      "w-12 h-6 rounded-full transition-all relative",
+                      "w-12 h-6 rounded-full transition-all relative cursor-pointer",
                       chatSettings.soundEnabled ? "bg-emerald-500" : "bg-zinc-200"
                     )}
                   >
@@ -774,14 +796,16 @@ function ChatContent() {
                       "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
                       chatSettings.soundEnabled ? "right-1" : "left-1"
                     )} />
-                  </button>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-semibold text-zinc-900">Notificações Push</p>
                     <p className="text-xs text-zinc-500">Mostrar alertas do navegador</p>
                   </div>
-                  <button 
+                  <div 
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
                       if (!chatSettings.pushEnabled && Notification.permission !== 'granted') {
                         Notification.requestPermission().then(permission => {
@@ -793,8 +817,9 @@ function ChatContent() {
                         setChatSettings(prev => ({ ...prev, pushEnabled: !prev.pushEnabled }));
                       }
                     }}
+                    onKeyDown={(e) => e.key === 'Enter' && (/* handle push toggle */ true)}
                     className={cn(
-                      "w-12 h-6 rounded-full transition-all relative",
+                      "w-12 h-6 rounded-full transition-all relative cursor-pointer",
                       chatSettings.pushEnabled ? "bg-emerald-500" : "bg-zinc-200"
                     )}
                   >
@@ -802,7 +827,7 @@ function ChatContent() {
                       "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
                       chatSettings.pushEnabled ? "right-1" : "left-1"
                     )} />
-                  </button>
+                  </div>
                 </div>
               </div>
               <div className="p-6 bg-zinc-50 border-t border-zinc-100">
