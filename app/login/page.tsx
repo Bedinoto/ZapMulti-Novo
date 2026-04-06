@@ -9,7 +9,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const router = useRouter();
+
+  React.useEffect(() => {
+    fetch('/api/ping')
+      .then(res => res.ok ? setServerStatus('online') : setServerStatus('offline'))
+      .catch(() => setServerStatus('offline'));
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,11 +33,12 @@ export default function LoginPage() {
       if (res.ok) {
         router.push('/chats');
       } else {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({ error: 'Resposta inválida do servidor' }));
         setError(data.error || 'Falha no login');
       }
-    } catch (err) {
-      setError('Erro ao conectar ao servidor');
+    } catch (err: any) {
+      console.error('Login fetch error:', err);
+      setError(`Erro ao conectar ao servidor: ${err.message || 'Erro desconhecido'}`);
     } finally {
       setLoading(false);
     }
@@ -45,6 +53,18 @@ export default function LoginPage() {
           </div>
           <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.2)</h1>
           <p className="text-zinc-500 mt-2">Sincronizado em: {new Date().toLocaleTimeString()}</p>
+          <div className="mt-2 flex items-center justify-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${
+              serverStatus === 'online' ? 'bg-emerald-500' : 
+              serverStatus === 'offline' ? 'bg-red-500' : 'bg-zinc-300 animate-pulse'
+            }`} />
+            <span className="text-xs text-zinc-400">
+              Servidor: {
+                serverStatus === 'online' ? 'Online' : 
+                serverStatus === 'offline' ? 'Offline' : 'Verificando...'
+              }
+            </span>
+          </div>
         </div>
 
         <div className="bg-white p-8 rounded-3xl shadow-xl shadow-zinc-200/50 border border-zinc-100">

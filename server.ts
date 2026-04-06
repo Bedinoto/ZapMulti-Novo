@@ -2,6 +2,11 @@ import { createServer } from 'node:http';
 import { parse } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// Hardcoded Database URL for Hostinger - MUST BE BEFORE PRISMA IMPORT
+// Using 127.0.0.1 instead of localhost for better compatibility in some environments
+process.env.DATABASE_URL = "mysql://u801415719_zapapi:+5mNmLbAjF@127.0.0.1:3306/u801415719_zapapi";
+
 import next from 'next';
 import express from 'express';
 import { Server } from 'socket.io';
@@ -451,19 +456,36 @@ async function handleUazapiWebhook(io: Server, payload: any) {
   }
 }
 
+let isNextReady = false;
+
 nextApp.prepare().then(async () => {
-  const expressApp = express();
-  const server = createServer(expressApp);
-  const io = new Server(server, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-      credentials: true
-    },
-    allowEIO3: true,
-    pingTimeout: 60000,
-    pingInterval: 25000
-  });
+  isNextReady = true;
+  console.log('✔ Next.js is ready');
+}).catch((err: any) => {
+  console.error('✘ Failed to prepare Next.js:', err);
+});
+
+const expressApp = express();
+const server = createServer(expressApp);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// Middleware to check if Next.js is ready
+expressApp.use((req, res, next) => {
+  if (!isNextReady && !req.path.startsWith('/api')) {
+    res.status(503).send('Application is starting, please wait...');
+    return;
+  }
+  next();
+});
 
   io.use((socket, next) => {
     try {
@@ -490,16 +512,14 @@ nextApp.prepare().then(async () => {
   });
 
   // Test Database Connection
-  try {
-    await prisma.$connect();
-    console.log('✔ Database connected successfully');
-  } catch (err) {
-    console.error('✘ Database connection failed!');
-    console.error('Please check your DATABASE_URL environment variable.');
-    console.error('Error details:', err instanceof Error ? err.message : err);
-  }
+  prisma.$connect()
+    .then(() => console.log('✔ Database connected successfully'))
+    .catch(err => {
+      console.error('✘ Database connection failed!');
+      console.error('Error details:', err instanceof Error ? err.message : err);
+    });
 
-  await syncFromDb();
+  syncFromDb();
 
   expressApp.use(express.json({ limit: '50mb' }));
   expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -522,6 +542,8 @@ nextApp.prepare().then(async () => {
     if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
     next();
   };
+
+  expressApp.get('/api/ping', (req, res) => res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady }));
 
   expressApp.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
@@ -920,11 +942,9 @@ nextApp.prepare().then(async () => {
 
   expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
 
-  server.listen(port, () => {
-    console.log(`> Ready on port ${port}`);
-    connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
-  });
-}).catch((err: any) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
+server.listen(port, () => {
+  console.log(`> Server is listening on port ${port}`);
+  console.log(`> Environment: ${process.env.NODE_ENV}`);
+  console.log(`> Database URL set: ${process.env.DATABASE_URL ? 'YES' : 'NO'}`);
+  connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
 });
