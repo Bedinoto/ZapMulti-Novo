@@ -273,10 +273,8 @@ async function syncFromDb() {
     }
 }
 
-const mediaDir = path.join(process.cwd(), 'public', 'media');
-if (!fs.existsSync(mediaDir)) {
-  fs.mkdirSync(mediaDir, { recursive: true });
-}
+// No local media storage needed for cloud-based UAZAPI
+// All media URLs are served directly from WhatsApp/UAZAPI
 
 async function connectToWhatsApp(io: Server, sessionId: string) {
   try {
@@ -506,7 +504,7 @@ nextApp.prepare().then(async () => {
   expressApp.use(express.json({ limit: '50mb' }));
   expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
   expressApp.use(cookieParser());
-  expressApp.use('/media', express.static(mediaDir));
+  // expressApp.use('/media', express.static(mediaDir));
 
   const authenticate = (req: any, res: any, next: any) => {
     const token = req.cookies.token;
