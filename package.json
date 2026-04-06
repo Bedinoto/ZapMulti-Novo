@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "prisma generate && next build && esbuild server.ts --bundle --platform=node --outfile=dist/server.js --external:next --external:express --external:socket.io --external:bcryptjs --external:jsonwebtoken --external:cookie-parser --external:cookie --external:@prisma/client",
+    "build": "rm -rf .next dist && prisma generate && next build && esbuild server.ts --bundle --platform=node --outfile=dist/server.js --external:next --external:express --external:socket.io --external:bcryptjs --external:jsonwebtoken --external:cookie-parser --external:cookie --external:@prisma/client",
     "start": "node dist/server.js",
     "lint": "next lint",
     "prisma:seed": "prisma db seed",
