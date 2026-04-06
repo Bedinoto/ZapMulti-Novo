@@ -7,15 +7,14 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "prisma generate && next build && esbuild server.ts --bundle --platform=node --outfile=dist/server.js --external:next --external:express --external:socket.io --external:bcryptjs --external:jsonwebtoken --external:cookie-parser --external:cookie --external:@prisma/client --external:pino",
+    "build": "prisma generate && next build && esbuild server.ts --bundle --platform=node --outfile=dist/server.js --external:next --external:express --external:socket.io --external:bcryptjs --external:jsonwebtoken --external:cookie-parser --external:cookie --external:@prisma/client",
     "start": "node dist/server.js",
     "lint": "next lint",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@hapi/boom": "^10.0.1",
     "@prisma/client": "^6.2.1",
-    "@whiskeysockets/baileys": "^6.7.9",
     "axios": "^1.14.0",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
@@ -27,9 +26,7 @@
     "lucide-react": "^0.454.0",
     "motion": "^11.11.11",
     "next": "15.0.2",
-    "pino": "^9.5.0",
     "prisma": "^6.2.1",
-    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "socket.io": "^4.8.1",
@@ -43,7 +40,6 @@
     "@types/express": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.17.6",
-    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.20",

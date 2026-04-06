@@ -15,8 +15,9 @@ import { prisma } from './lib/prisma';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
-const port = 3000;
+const port = Number(process.env.PORT) || 3000;
 const UAZAPI_INSTANCE_NAME = process.env.UAZAPI_INSTANCE_NAME || 'default';
+const UAZAPI_WEBHOOK_URL = process.env.UAZAPI_WEBHOOK_URL;
 
 // Handle Next.js import for ESM
 const nextApp = next({ dev, hostname, port });
@@ -280,6 +281,18 @@ if (!fs.existsSync(mediaDir)) {
 async function connectToWhatsApp(io: Server, sessionId: string) {
   try {
     await updateUazapiStatus(io);
+    
+    // Automatically update webhook if URL is provided
+    if (UAZAPI_WEBHOOK_URL) {
+      console.log(`Setting webhook to ${UAZAPI_WEBHOOK_URL}...`);
+      try {
+        await uazapi.updateWebhook(UAZAPI_WEBHOOK_URL);
+        console.log('✔ Webhook updated successfully');
+      } catch (webhookErr: any) {
+        console.error('Failed to update webhook:', webhookErr.response?.data || webhookErr.message);
+      }
+    }
+
     // If disconnected, try to connect to get QR or start session
     if (sessions[sessionId]?.status === 'disconnected') {
       await uazapi.connect();
@@ -294,9 +307,8 @@ async function handleUazapiWebhook(io: Server, payload: any) {
   const { event, instance, data } = payload;
   const sessionId = instance || payload.instanceName || payload.instance_name || UAZAPI_INSTANCE_NAME;
 
-  // Detailed logging to a file for debugging
-  const logEntry = `[${new Date().toISOString()}] Webhook: ${event} | Session: ${sessionId} | Payload: ${JSON.stringify(payload)}\n`;
-  fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), logEntry);
+  // Detailed logging to console for debugging
+  console.log(`[${new Date().toISOString()}] Webhook: ${event} | Session: ${sessionId} | Payload: ${JSON.stringify(payload)}`);
 
   console.log(`Webhook received: ${event} for session ${sessionId}`);
 
@@ -339,8 +351,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
             source: 'automatic'
           }
         }).catch(e => {
-          const errLog = `[${new Date().toISOString()}] ERROR saving contact ${targetJid}: ${e.message}\n`;
-          fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+          console.error(`[${new Date().toISOString()}] ERROR saving contact ${targetJid}: ${e.message}`);
           console.error('Error saving contact to DB:', e);
         });
         emitToRelevantUsers(io, 'whatsapp:contact-new', contacts[targetJid]);
@@ -368,8 +379,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
             timestamp: new Date()
           }
         }).catch(e => {
-          const errLog = `[${new Date().toISOString()}] ERROR saving chat ${chatKey}: ${e.message}\n`;
-          fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+          console.error(`[${new Date().toISOString()}] ERROR saving chat ${chatKey}: ${e.message}`);
           console.error('Error saving chat to DB:', e);
         });
       }
@@ -395,8 +405,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
           fileName: msg.fileName
         }
       }).catch(e => {
-        const errLog = `[${new Date().toISOString()}] ERROR saving message ${msg.key.id}: ${e.message}\n`;
-        fs.appendFileSync(path.join(process.cwd(), 'webhook.log'), errLog);
+        console.error(`[${new Date().toISOString()}] ERROR saving message ${msg.key.id}: ${e.message}`);
         console.error('Error saving message to DB:', e);
       });
 
