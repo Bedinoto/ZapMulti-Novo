@@ -13,9 +13,21 @@ export default function LoginPage() {
   const router = useRouter();
 
   React.useEffect(() => {
-    fetch('/api/ping')
-      .then(res => res.ok ? setServerStatus('online') : setServerStatus('offline'))
-      .catch(() => setServerStatus('offline'));
+    const pingUrl = `${window.location.origin}/api/ping`;
+    fetch(pingUrl)
+      .then(async res => {
+        if (res.ok) {
+          setServerStatus('online');
+        } else {
+          const text = await res.text().catch(() => 'Erro desconhecido');
+          console.error('Server check failed:', res.status, text);
+          setServerStatus('offline');
+        }
+      })
+      .catch(err => {
+        console.error('Server check error:', err);
+        setServerStatus('offline');
+      });
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -51,7 +63,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.2)</h1>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.3)</h1>
           <p className="text-zinc-500 mt-2">Sincronizado em: {new Date().toLocaleTimeString()}</p>
           <div className="mt-2 flex items-center justify-center gap-2">
             <div className={`w-2 h-2 rounded-full ${
@@ -61,7 +73,7 @@ export default function LoginPage() {
             <span className="text-xs text-zinc-400">
               Servidor: {
                 serverStatus === 'online' ? 'Online' : 
-                serverStatus === 'offline' ? 'Offline' : 'Verificando...'
+                serverStatus === 'offline' ? 'Offline (Verifique o log do navegador)' : 'Verificando...'
               }
             </span>
           </div>

@@ -1,3 +1,5 @@
+console.log('>>> SERVER STARTING UP...');
+
 import { createServer } from 'node:http';
 import { parse } from 'node:url';
 import fs from 'node:fs';
@@ -466,6 +468,13 @@ nextApp.prepare().then(async () => {
 });
 
 const expressApp = express();
+
+// Health check endpoint - MUST be before any middleware
+expressApp.get('/api/ping', (req, res) => {
+  console.log(`[PING] Request from ${req.ip}, isNextReady: ${isNextReady}`);
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.0.3' });
+});
+
 const server = createServer(expressApp);
 const io = new Server(server, {
   cors: {
@@ -481,6 +490,7 @@ const io = new Server(server, {
 // Middleware to check if Next.js is ready
 expressApp.use((req, res, next) => {
   if (!isNextReady && !req.path.startsWith('/api')) {
+    console.log(`[STARTUP] Blocking request to ${req.path} - Next.js not ready`);
     res.status(503).send('Application is starting, please wait...');
     return;
   }
@@ -542,8 +552,6 @@ expressApp.use((req, res, next) => {
     if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
     next();
   };
-
-  expressApp.get('/api/ping', (req, res) => res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady }));
 
   expressApp.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
