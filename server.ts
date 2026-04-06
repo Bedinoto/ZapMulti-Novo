@@ -907,8 +907,8 @@ nextApp.prepare().then(async () => {
 
   expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
 
-  server.listen(port, hostname, async () => {
-    console.log(`> Ready on http://${hostname}:${port}`);
+  server.listen(port, () => {
+    console.log(`> Ready on port ${port}`);
     connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
   });
 }).catch((err: any) => {
