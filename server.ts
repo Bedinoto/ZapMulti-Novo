@@ -528,7 +528,13 @@ nextApp.prepare().then(async () => {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
-    res.cookie('token', token, { httpOnly: true, secure: false, sameSite: 'lax' });
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('token', token, { 
+      httpOnly: true, 
+      secure: isProd, // True in production (HTTPS)
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/'
+    });
     res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
   });
 
