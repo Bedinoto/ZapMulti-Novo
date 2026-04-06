@@ -10,10 +10,12 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [syncTime, setSyncTime] = useState<string>('');
   const router = useRouter();
 
   React.useEffect(() => {
-    const pingUrl = `${window.location.origin}/api/ping`;
+    setSyncTime(new Date().toLocaleTimeString());
+    const pingUrl = `${window.location.origin}/health-check`;
     fetch(pingUrl)
       .then(async res => {
         if (res.ok) {
@@ -63,8 +65,8 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.3)</h1>
-          <p className="text-zinc-500 mt-2">Sincronizado em: {new Date().toLocaleTimeString()}</p>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.0.4)</h1>
+          <p className="text-zinc-500 mt-2">Sincronizado em: {syncTime || '...'}</p>
           <div className="mt-2 flex items-center justify-center gap-2">
             <div className={`w-2 h-2 rounded-full ${
               serverStatus === 'online' ? 'bg-emerald-500' : 

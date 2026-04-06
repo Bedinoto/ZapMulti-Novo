@@ -469,10 +469,16 @@ nextApp.prepare().then(async () => {
 
 const expressApp = express();
 
-// Health check endpoint - MUST be before any middleware
-expressApp.get('/api/ping', (req, res) => {
-  console.log(`[PING] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.0.3' });
+// Request logger - MUST be first
+expressApp.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.url}`);
+  next();
+});
+
+// Health check endpoint
+expressApp.get('/health-check', (req, res) => {
+  console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.0.4' });
 });
 
 const server = createServer(expressApp);
@@ -555,6 +561,7 @@ expressApp.use((req, res, next) => {
 
   expressApp.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
+    console.log(`[LOGIN] Attempt for email: ${email}`);
     try {
       const user = await prisma.user.findUnique({ where: { email } });
       if (!user || !bcrypt.compareSync(password, user.password)) {
@@ -948,7 +955,10 @@ expressApp.use((req, res, next) => {
     } catch (err) { res.status(500).json({ error: 'Falha ao enviar' }); }
   });
 
-  expressApp.all(/.*/, (req, res) => handle(req, res, parse(req.url!, true)));
+  expressApp.all(/.*/, (req, res) => {
+    console.log(`[NEXT] Request: ${req.method} ${req.url}`);
+    return handle(req, res, parse(req.url!, true));
+  });
 
 server.listen(port, () => {
   console.log(`> Server is listening on port ${port}`);
