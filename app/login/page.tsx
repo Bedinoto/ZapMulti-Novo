@@ -43,7 +43,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-emerald-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo de volta</h1>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo</h1>
           <p className="text-zinc-500 mt-2">Acesse sua conta para gerenciar suas conversas</p>
         </div>
 
