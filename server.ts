@@ -1,5 +1,6 @@
 console.log('>>> SERVER STARTING UP...');
 
+import 'dotenv/config';
 import { createServer } from 'node:http';
 import { parse } from 'node:url';
 import fs from 'node:fs';
