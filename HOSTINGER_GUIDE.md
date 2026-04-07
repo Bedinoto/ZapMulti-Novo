@@ -4,7 +4,8 @@ Como você não está usando uma VPS, o processo é mais simples. Siga estes pas
 
 ### 1. Banco de Dados (phpMyAdmin)
 1. No painel da Hostinger, crie um banco de dados MySQL (você já fez isso).
-2. Abra o **phpMyAdmin**.
+2. **IMPORTANTE:** Vá em **Remote MySQL** e adicione o IP `34.96.52.88` (ou use `%` para todos) para permitir que o AI Studio se conecte ao seu banco.
+3. Abra o **phpMyAdmin**.
 3. Selecione o seu banco de dados.
 4. Vá na aba **Importar**.
 5. Selecione o arquivo `setup.sql` que está na raiz deste projeto e clique em **Executar**.
@@ -17,7 +18,7 @@ Como você não está usando uma VPS, o processo é mais simples. Siga estes pas
 4. No campo **Application Root**, coloque a pasta onde você subiu os arquivos.
 
 ### 3. Variáveis de Ambiente
-No painel da Hostinger, adicione as seguintes variáveis (as do banco não precisam mais, pois já integramos no código):
+No painel da Hostinger, adicione as seguintes variáveis (as do banco não precisam mais, pois já integramos o IP 193.203.175.236 no código):
 - `NODE_ENV`: `production`
 - `JWT_SECRET`: `uma-frase-longa-e-aleatoria`
 - `UAZAPI_SERVER_URL`: `https://bedinoto.uazapi.com`
