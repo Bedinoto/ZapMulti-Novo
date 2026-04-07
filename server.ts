@@ -17,7 +17,7 @@ import bcrypt from 'bcryptjs';
 import cookieParser from 'cookie-parser';
 import cookie from 'cookie';
 import { uazapi } from './lib/uazapi';
-import { prisma } from './lib/prisma';
+import { db, pool } from './lib/db';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const dev = process.env.NODE_ENV !== 'production';
@@ -171,7 +171,7 @@ async function updateUazapiStatus(io: Server) {
                 };
                 
                 // Save to DB
-                await prisma.chat.upsert({
+                await db.chat.upsert({
                   where: { id: chatKey },
                   update: { name: chats[chatKey].name },
                   create: {
@@ -233,36 +233,34 @@ function emitToRelevantUsers(io: Server, event: string, data: any) {
 async function syncFromDb() {
     console.log('Syncing data from database...');
     try {
-        const dbContacts = await prisma.contact.findMany();
+        const dbContacts = await db.contact.findMany();
         for (const c of dbContacts) {
             contacts[c.id] = {
                 ...c,
-                lastInteraction: c.lastInteraction.getTime()
+                lastInteraction: c.lastInteraction ? new Date(c.lastInteraction).getTime() : Date.now()
             };
         }
 
-        const dbChats = await prisma.chat.findMany({
-            include: {
-                messages: {
-                    orderBy: { messageTimestamp: 'asc' },
-                    take: 50
-                }
-            }
-        });
+        const dbChats = await db.chat.findMany();
         for (const c of dbChats) {
             const chatKey = c.id;
+            const dbMessages = await db.message.findMany({
+                where: { chatId: chatKey },
+                orderBy: { timestamp: 'asc' },
+                take: 50
+            });
             chats[chatKey] = {
                 id: c.jid,
                 sessionId: c.sessionId,
                 key: chatKey,
                 name: c.name,
                 unreadCount: c.unreadCount,
-                timestamp: Math.floor(c.timestamp.getTime() / 1000),
+                timestamp: Math.floor(new Date(c.timestamp).getTime() / 1000),
                 assignedTo: c.assignedTo,
                 assignedToName: c.assignedToName,
-                lastMessage: c.messages.length > 0 ? (c.messages[c.messages.length - 1].text || (c.messages[c.messages.length - 1].mediaType === 'image' ? '📷 Foto' : '📄 Documento')) : '',
-                messages: c.messages.map(m => ({
-                    key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe },
+                lastMessage: dbMessages.length > 0 ? (dbMessages[dbMessages.length - 1].text || (dbMessages[dbMessages.length - 1].mediaType === 'image' ? '📷 Foto' : '📄 Documento')) : '',
+                messages: dbMessages.map(m => ({
+                    key: { id: m.id, remoteJid: m.jid, fromMe: m.fromMe === 1 || m.fromMe === true },
                     message: m.text ? { conversation: m.text } : {},
                     messageTimestamp: m.messageTimestamp,
                     status: m.status,
@@ -345,7 +343,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
           lastInteraction: Date.now(),
           source: 'automatic'
         };
-        await prisma.contact.upsert({
+        await db.contact.upsert({
           where: { id: targetJid },
           update: { lastInteraction: new Date() },
           create: {
@@ -373,7 +371,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
           unreadCount: 0,
           messages: []
         };
-        await prisma.chat.upsert({
+        await db.chat.upsert({
           where: { id: chatKey },
           update: { timestamp: new Date() },
           create: {
@@ -393,7 +391,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
       chats[chatKey].timestamp = timestamp;
 
       // Save Message
-      await prisma.message.upsert({
+      await db.message.upsert({
         where: { id: msg.key.id },
         update: { status: msg.status || 0 },
         create: {
@@ -441,7 +439,7 @@ async function handleUazapiWebhook(io: Server, payload: any) {
           timestamp: Math.floor(Date.now() / 1000),
           messages: []
         };
-        await prisma.chat.upsert({
+        await db.chat.upsert({
           where: { id: chatKey },
           update: { name: chats[chatKey].name },
           create: {
@@ -528,8 +526,11 @@ expressApp.use((req, res, next) => {
   });
 
   // Test Database Connection
-  prisma.$connect()
-    .then(() => console.log('✔ Database connected successfully'))
+  pool.getConnection()
+    .then(conn => {
+      console.log('✔ Database connected successfully');
+      conn.release();
+    })
     .catch(err => {
       console.error('✘ Database connection failed!');
       console.error('Error details:', err instanceof Error ? err.message : err);
@@ -563,7 +564,7 @@ expressApp.use((req, res, next) => {
     const { email, password } = req.body;
     console.log(`[LOGIN] Attempt for email: ${email}`);
     try {
-      const user = await prisma.user.findUnique({ where: { email } });
+      const user = await db.user.findUnique({ where: { email } });
       if (!user || !bcrypt.compareSync(password, user.password)) {
         return res.status(401).json({ error: 'E-mail ou senha incorretos' });
       }
@@ -578,8 +579,8 @@ expressApp.use((req, res, next) => {
       res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
     } catch (err: any) {
       console.error('Login error:', err);
-      // Check if it's a Prisma connection error
-      const isConnError = err.code === 'P2024' || err.code === 'P1001' || err.message.includes('Can\'t reach database');
+      // Check if it's a connection error
+      const isConnError = err.code === 'ECONNREFUSED' || err.message.includes('Can\'t reach database');
       res.status(500).json({ 
         error: isConnError 
           ? 'Erro de comunicação com o banco de dados. Verifique se o Host, Usuário e Senha do MySQL estão corretos.' 
@@ -593,18 +594,16 @@ expressApp.use((req, res, next) => {
 
   // User Management
   expressApp.get('/api/users', authenticate, isAdmin, async (req, res) => {
-    const dbUsers = await prisma.user.findMany({
-        select: { id: true, name: true, email: true, role: true, createdAt: true }
-    });
-    res.json(dbUsers);
+    const dbUsers = await db.user.findMany();
+    res.json(dbUsers.map((u: any) => ({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.createdAt })));
   });
 
   expressApp.post('/api/users', authenticate, isAdmin, async (req, res) => {
     const { name, email, password, role } = req.body;
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = await db.user.findUnique({ where: { email } });
     if (existing) return res.status(400).json({ error: 'E-mail já cadastrado' });
     
-    const newUser = await prisma.user.create({
+    const newUser = await db.user.create({
         data: {
             name,
             email,
@@ -620,15 +619,14 @@ expressApp.use((req, res, next) => {
     const { name, email, password, role } = req.body;
     
     try {
-        const updatedUser = await prisma.user.update({
+        const updatedUser = await db.user.update({
             where: { id },
             data: {
                 ...(name && { name }),
                 ...(email && { email }),
                 ...(role && { role }),
                 ...(password && { password: bcrypt.hashSync(password, 10) })
-            },
-            select: { id: true, name: true, email: true, role: true }
+            }
         });
         res.json(updatedUser);
     } catch (e) {
@@ -641,7 +639,7 @@ expressApp.use((req, res, next) => {
     if (id === (req as any).user.id) return res.status(400).json({ error: 'Você não pode excluir a si mesmo' });
     
     try {
-        await prisma.user.delete({ where: { id } });
+        await db.user.delete({ where: { id } });
         res.json({ success: true });
     } catch (e) {
         res.status(404).json({ error: 'Usuário não encontrado' });
@@ -685,7 +683,7 @@ expressApp.use((req, res, next) => {
     };
 
     // DB Save
-    await prisma.contact.create({
+    await db.contact.create({
         data: {
             id: jid,
             name,
@@ -709,7 +707,7 @@ expressApp.use((req, res, next) => {
     contacts[id].name = name;
     
     // DB Update
-    await prisma.contact.update({
+    await db.contact.update({
         where: { id },
         data: { name }
     });
@@ -718,7 +716,7 @@ expressApp.use((req, res, next) => {
     for (const chatKey in chats) {
         if (chats[chatKey].id === id) {
             chats[chatKey].name = name;
-            await prisma.chat.update({
+            await db.chat.update({
                 where: { id: chatKey },
                 data: { name }
             });
@@ -737,7 +735,7 @@ expressApp.use((req, res, next) => {
     delete contacts[id];
     
     // DB Delete
-    await prisma.contact.delete({ where: { id } });
+    await db.contact.delete({ where: { id } });
     
     emitToRelevantUsers(io, 'whatsapp:contact-deleted', { jid: id });
     res.json({ success: true });
@@ -765,7 +763,7 @@ expressApp.use((req, res, next) => {
         };
         
         // DB Save
-        await prisma.chat.upsert({
+        await db.chat.upsert({
             where: { id: chatKey },
             update: { name: contacts[id].name },
             create: {
@@ -791,7 +789,7 @@ expressApp.use((req, res, next) => {
     chats[chatKey].assignedToName = req.user.name;
 
     // DB Update
-    await prisma.chat.update({
+    await db.chat.update({
         where: { id: chatKey },
         data: {
             assignedTo: req.user.id,
@@ -811,7 +809,7 @@ expressApp.use((req, res, next) => {
     chats[chatKey].assignedToName = null;
 
     // DB Update
-    await prisma.chat.update({
+    await db.chat.update({
         where: { id: chatKey },
         data: {
             assignedTo: null,
@@ -834,7 +832,7 @@ expressApp.use((req, res, next) => {
     delete chats[chatKey];
     
     // DB Delete
-    await prisma.chat.delete({ where: { id: chatKey } });
+    await db.chat.delete({ where: { id: chatKey } });
 
     emitToRelevantUsers(io, 'whatsapp:chat-deleted', { chatKey });
     res.json({ success: true });
@@ -917,7 +915,7 @@ expressApp.use((req, res, next) => {
       }
 
       // Save Message to DB
-      await prisma.message.upsert({
+      await db.message.upsert({
         where: { id: normalizedMsg.key.id },
         update: { status: normalizedMsg.status || 0 },
         create: {
@@ -936,7 +934,7 @@ expressApp.use((req, res, next) => {
       }).catch(err => console.error('Failed to save sent message to DB:', err));
 
       // Update DB timestamp
-      await prisma.chat.update({
+      await db.chat.update({
           where: { id: chatKey },
           data: { 
             timestamp: new Date(normalizedMsg.messageTimestamp * 1000)
