@@ -65,7 +65,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.1.4)</h1>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.1.5)</h1>
           <p className="text-zinc-500 mt-2">Sincronizado em: {syncTime || '...'}</p>
           <div className="mt-2 flex items-center justify-center gap-2">
             <div className={`w-2 h-2 rounded-full ${
