@@ -17,10 +17,10 @@ import {
   Edit2,
   Trash2
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
-import { cn } from '@/lib/utils';
+import Sidebar from '../../components/Sidebar';
+import { cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
-import { API_URL } from '@/lib/config';
+import { API_URL } from '../../lib/config';
 
 interface Contact {
   id: string;

@@ -15,9 +15,9 @@ import {
   QrCode
 } from 'lucide-react';
 import Image from 'next/image';
-import Sidebar from '@/components/Sidebar';
-import { cn } from '@/lib/utils';
-import { API_URL } from '@/lib/config';
+import Sidebar from '../../components/Sidebar';
+import { cn } from '../../lib/utils';
+import { API_URL } from '../../lib/config';
 
 interface Session {
   id: string;

@@ -13,9 +13,9 @@ import {
   CheckCircle2,
   XCircle
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
-import { cn } from '@/lib/utils';
-import { API_URL } from '@/lib/config';
+import Sidebar from '../../components/Sidebar';
+import { cn } from '../../lib/utils';
+import { API_URL } from '../../lib/config';
 
 interface UserData {
   id: string;

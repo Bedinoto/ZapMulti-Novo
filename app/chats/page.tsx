@@ -10,9 +10,9 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
-import Sidebar from '@/components/Sidebar';
-import { cn } from '@/lib/utils';
-import { API_URL } from '@/lib/config';
+import Sidebar from '../../components/Sidebar';
+import { cn } from '../../lib/utils';
+import { API_URL } from '../../lib/config';
 
 interface Message {
   key: { remoteJid: string; fromMe: boolean; id: string; };

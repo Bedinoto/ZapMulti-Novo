@@ -12,8 +12,8 @@ import {
   Link as LinkIcon,
   Shield
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { API_URL } from '@/lib/config';
+import { cn } from '../lib/utils';
+import { API_URL } from '../lib/config';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Painel', href: '/' },

@@ -13,8 +13,8 @@ import {
   CheckCircle2,
   Play
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
-import { cn } from '@/lib/utils';
+import Sidebar from '../../components/Sidebar';
+import { cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function SettingsPage() {
