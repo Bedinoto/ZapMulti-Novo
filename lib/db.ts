@@ -194,5 +194,37 @@ export const db = {
         return await db.message.create({ data: create });
       }
     }
+  },
+  session: {
+    findUnique: async ({ where }: { where: { id: string } }) => {
+      const rows = await query<any[]>('SELECT * FROM Session WHERE id = ? LIMIT 1', [where.id]);
+      return rows[0] || null;
+    },
+    findMany: async () => {
+      return await query<any[]>('SELECT * FROM Session');
+    },
+    upsert: async ({ where, update, create }: { where: { id: string }, update: any, create: any }) => {
+      const existing = await db.session.findUnique({ where });
+      if (existing) {
+        const keys = Object.keys(update);
+        const values = Object.values(update);
+        const setClause = keys.map(k => `${k} = ?`).join(', ');
+        const sql = `UPDATE Session SET ${setClause}, updatedAt = NOW() WHERE id = ?`;
+        await query(sql, [...values, where.id]);
+        return { ...existing, ...update };
+      } else {
+        const keys = Object.keys(create);
+        const values = Object.values(create);
+        const columns = keys.join(', ');
+        const placeholders = keys.map(() => '?').join(', ');
+        const sql = `INSERT INTO Session (${columns}, createdAt, updatedAt) VALUES (${placeholders}, NOW(), NOW())`;
+        await query(sql, values);
+        return create;
+      }
+    },
+    delete: async ({ where }: { where: { id: string } }) => {
+      await query('DELETE FROM Session WHERE id = ?', [where.id]);
+      return { id: where.id };
+    }
   }
 };

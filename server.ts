@@ -33,11 +33,29 @@ import cookie from 'cookie';
 import { uazapi } from './lib/uazapi';
 import { db, pool } from './lib/db';
 
+// Ensure Session table exists
+(async () => {
+  try {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS Session (
+        id VARCHAR(255) PRIMARY KEY,
+        status VARCHAR(50),
+        qrCode TEXT,
+        userInfo JSON,
+        createdAt DATETIME,
+        updatedAt DATETIME
+      )
+    `);
+    console.log('[DATABASE] Session table verified');
+  } catch (err) {
+    console.error('[DATABASE] Error verifying Session table:', err);
+  }
+})();
+
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
 const port = Number(process.env.PORT) || 3000;
-const UAZAPI_INSTANCE_NAME = process.env.UAZAPI_INSTANCE_NAME || 'default';
 const UAZAPI_WEBHOOK_URL = process.env.UAZAPI_WEBHOOK_URL;
 
 // Global error handlers to prevent crashes on EPIPE or other unexpected errors
@@ -110,13 +128,12 @@ function normalizeUazapiMessage(sentMsg: any, jid: string, text: string, mediaTy
     };
 }
 
-async function updateUazapiStatus(io: Server) {
+async function updateUazapiStatus(io: Server, sessionId: string) {
   try {
-    const sessionId = UAZAPI_INSTANCE_NAME;
     console.log(`Updating status for session ${sessionId}...`);
     let status;
     try {
-      status = await uazapi.getStatus();
+      status = await uazapi.getStatus(sessionId);
       console.log(`Status for ${sessionId}:`, JSON.stringify(status));
     } catch (err: any) {
       if (err.response?.status === 404) {
@@ -124,7 +141,7 @@ async function updateUazapiStatus(io: Server) {
         try {
           const createRes = await uazapi.createInstance(sessionId, process.env.UAZAPI_INSTANCE_TOKEN || '');
           console.log(`Instance ${sessionId} created:`, JSON.stringify(createRes));
-          status = await uazapi.getStatus();
+          status = await uazapi.getStatus(sessionId);
         } catch (createErr: any) {
           console.error(`Failed to create instance ${sessionId}:`, createErr.response?.data || createErr.message);
           status = {
@@ -160,7 +177,7 @@ async function updateUazapiStatus(io: Server) {
       if (sessions[sessionId].status === 'connected' && !syncedSessions.has(sessionId)) {
         console.log(`Syncing chats for session ${sessionId}...`);
         try {
-          const remoteChatsResponse = await uazapi.getChats();
+          const remoteChatsResponse = await uazapi.getChats(sessionId);
           console.log(`Remote chats response for ${sessionId} (keys):`, Object.keys(remoteChatsResponse || {}));
           
           let remoteChats = [];
@@ -223,6 +240,22 @@ async function updateUazapiStatus(io: Server) {
         user: sessions[sessionId].userInfo
       });
     }
+
+    // Persist session to DB
+    await db.session.upsert({
+      where: { id: sessionId },
+      update: {
+        status: sessions[sessionId].status,
+        qrCode: sessions[sessionId].qrCode,
+        userInfo: sessions[sessionId].userInfo ? JSON.stringify(sessions[sessionId].userInfo) : null
+      },
+      create: {
+        id: sessionId,
+        status: sessions[sessionId].status,
+        qrCode: sessions[sessionId].qrCode,
+        userInfo: sessions[sessionId].userInfo ? JSON.stringify(sessions[sessionId].userInfo) : null
+      }
+    }).catch(e => console.error(`Error persisting session ${sessionId} to DB:`, e));
   } catch (error) {
     console.error('Error updating uazapi status:', error);
   }
@@ -302,40 +335,38 @@ async function syncFromDb() {
 
 async function connectToWhatsApp(io: Server, sessionId: string) {
   try {
-    await updateUazapiStatus(io);
+    await updateUazapiStatus(io, sessionId);
     
     // Automatically update webhook if URL is provided
     if (UAZAPI_WEBHOOK_URL) {
-      console.log(`Setting webhook to ${UAZAPI_WEBHOOK_URL}...`);
+      console.log(`Setting webhook for ${sessionId} to ${UAZAPI_WEBHOOK_URL}...`);
       try {
-        await uazapi.updateWebhook(UAZAPI_WEBHOOK_URL);
-        console.log('✔ Webhook updated successfully');
+        await uazapi.updateWebhook(UAZAPI_WEBHOOK_URL, undefined, sessionId);
+        console.log(`✔ Webhook updated successfully for ${sessionId}`);
       } catch (webhookErr: any) {
-        console.error('Failed to update webhook:', webhookErr.response?.data || webhookErr.message);
+        console.error(`Failed to update webhook for ${sessionId}:`, webhookErr.response?.data || webhookErr.message);
       }
     }
 
     // If disconnected, try to connect to get QR or start session
     if (sessions[sessionId]?.status === 'disconnected') {
-      await uazapi.connect();
-      await updateUazapiStatus(io);
+      await uazapi.connect(undefined, sessionId);
+      await updateUazapiStatus(io, sessionId);
     }
   } catch (error) {
-    console.error('Error connecting to uazapi:', error);
+    console.error(`Error connecting to uazapi for ${sessionId}:`, error);
   }
 }
 
 async function handleUazapiWebhook(io: Server, payload: any) {
   const { event, instance, data } = payload;
-  const sessionId = instance || payload.instanceName || payload.instance_name || UAZAPI_INSTANCE_NAME;
+  const sessionId = instance || payload.instanceName || payload.instance_name || 'default';
 
   // Detailed logging to console for debugging
-  console.log(`[${new Date().toISOString()}] Webhook: ${event} | Session: ${sessionId} | Payload: ${JSON.stringify(payload)}`);
-
-  console.log(`Webhook received: ${event} for session ${sessionId}`);
+  console.log(`[${new Date().toISOString()}] Webhook: ${event} | Session: ${sessionId}`);
 
   if (event === 'connection' || event === 'connection.update') {
-    await updateUazapiStatus(io);
+    await updateUazapiStatus(io, sessionId);
   } else if (event === 'messages' || event === 'messages.upsert' || event === 'messages.set') {
     const messages = Array.isArray(data) ? data : (data?.messages || [data]);
     console.log(`Processing ${messages.length} messages from event ${event} for session ${sessionId}`);
@@ -498,7 +529,7 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.4.1' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.1' });
 });
 
 const server = createServer(expressApp);
@@ -891,18 +922,21 @@ expressApp.use((req, res, next) => {
   });
 
   expressApp.post('/api/connections', authenticate, (req: any, res) => {
-    connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
-    res.json({ success: true, sessionId: UAZAPI_INSTANCE_NAME });
+    const { sessionId } = req.body;
+    const targetSessionId = sessionId || 'default';
+    connectToWhatsApp(io, targetSessionId);
+    res.json({ success: true, sessionId: targetSessionId });
   });
 
   expressApp.delete('/api/connections/:id', authenticate, async (req: any, res) => {
     const { id } = req.params;
     if (sessions[id]) {
       try {
-        await uazapi.logout();
-        await updateUazapiStatus(io);
+        await uazapi.logout(id);
+        await updateUazapiStatus(io, id);
       } catch (e: any) { console.error('Error logging out', e); }
       delete sessions[id];
+      await db.session.delete({ where: { id } }).catch(e => console.error('Error deleting session from DB:', e));
       emitToRelevantUsers(io, 'whatsapp:session-removed', { sessionId: id });
       res.json({ success: true });
     } else res.status(404).json({ error: 'Session not found' });
@@ -914,8 +948,8 @@ expressApp.use((req, res, next) => {
       console.log(`Manual repair requested for session ${id}`);
       
       try {
-        await uazapi.connect();
-        await updateUazapiStatus(io);
+        await uazapi.connect(undefined, id);
+        await updateUazapiStatus(io, id);
         res.json({ success: true });
       } catch (err) {
         res.status(500).json({ error: 'Falha ao reparar conexão' });
@@ -924,20 +958,39 @@ expressApp.use((req, res, next) => {
   });
 
   expressApp.get('/api/whatsapp/status', authenticate, async (req: any, res) => {
-    await updateUazapiStatus(io);
+    // Update all active sessions
+    for (const sessionId of Object.keys(sessions)) {
+      await updateUazapiStatus(io, sessionId);
+    }
 
     let filteredChats = chats;
     if (req.user.role !== 'admin') {
       filteredChats = Object.fromEntries(Object.entries(chats).filter(([_, chat]: [string, any]) => !chat.assignedTo || chat.assignedTo === req.user.id));
     }
-    const mainSession = sessions[UAZAPI_INSTANCE_NAME] || { status: 'disconnected', qrCode: null, userInfo: null };
-    res.json({ status: mainSession.status, qr: mainSession.qrCode, user: mainSession.userInfo, chats: filteredChats });
+    
+    // Return first connected session or first session found
+    const activeSessions = Object.values(sessions);
+    const mainSession = activeSessions.find(s => s.status === 'connected') || activeSessions[0] || { status: 'disconnected', qrCode: null, userInfo: null };
+    
+    res.json({ 
+      status: mainSession.status, 
+      qr: mainSession.qrCode, 
+      user: mainSession.userInfo, 
+      chats: filteredChats,
+      sessions: activeSessions 
+    });
   });
 
   expressApp.post('/api/whatsapp/send', authenticate, async (req: any, res) => {
     const { jid: rawJid, text, media, mediaType, fileName, mimeType, sessionId, quotedMessageId } = req.body;
     let jid = normalizeJid(rawJid);
-    let targetSessionId = sessionId || UAZAPI_INSTANCE_NAME;
+    
+    // Find a connected session if not specified
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+      const activeSession = Object.values(sessions).find(s => s.status === 'connected');
+      targetSessionId = activeSession?.id || 'default';
+    }
     
     const session = sessions[targetSessionId];
     if (!session || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp não conectado' });
@@ -948,9 +1001,9 @@ expressApp.use((req, res, next) => {
     try {
       let sentMsg: any;
       if (media && mediaType) {
-        sentMsg = await uazapi.sendMedia(jid, media, mediaType === 'image' ? 'image' : 'document', finalMessage, fileName, mimeType);
+        sentMsg = await uazapi.sendMedia(jid, media, mediaType === 'image' ? 'image' : 'document', finalMessage, fileName, mimeType, targetSessionId);
       } else {
-        sentMsg = await uazapi.sendText(jid, finalMessage || '');
+        sentMsg = await uazapi.sendText(jid, finalMessage || '', undefined, targetSessionId);
       }
 
       const normalizedMsg = normalizeUazapiMessage(sentMsg, jid, finalMessage, mediaType);
@@ -1010,9 +1063,36 @@ expressApp.use((req, res, next) => {
     return handle(req, res, parse(req.url!, true));
   });
 
-server.listen(port, () => {
+server.listen(port, async () => {
   console.log(`> Server is listening on port ${port}`);
   console.log(`> Environment: ${process.env.NODE_ENV}`);
   console.log(`> Database URL set: ${process.env.DATABASE_URL ? 'YES' : 'NO'}`);
-  connectToWhatsApp(io, UAZAPI_INSTANCE_NAME);
+  
+  // Load and connect to all persisted sessions
+  try {
+    const dbSessions = await db.session.findMany();
+    console.log(`[DATABASE] Found ${dbSessions.length} persisted sessions`);
+    
+    if (dbSessions.length > 0) {
+      for (const s of dbSessions) {
+        // Initialize in-memory sessions object
+        sessions[s.id] = {
+          id: s.id,
+          status: s.status,
+          qrCode: s.qrCode,
+          userInfo: s.userInfo ? (typeof s.userInfo === 'string' ? JSON.parse(s.userInfo) : s.userInfo) : null
+        };
+        connectToWhatsApp(io, s.id);
+      }
+    } else {
+      // Fallback to default session if none found
+      const initialSessionId = process.env.UAZAPI_INSTANCE_NAME || 'default';
+      connectToWhatsApp(io, initialSessionId);
+    }
+  } catch (err) {
+    console.error('[DATABASE] Error loading persisted sessions:', err);
+    // Fallback to default session on error
+    const initialSessionId = process.env.UAZAPI_INSTANCE_NAME || 'default';
+    connectToWhatsApp(io, initialSessionId);
+  }
 });
