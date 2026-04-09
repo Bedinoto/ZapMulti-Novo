@@ -13,6 +13,7 @@ import {
   Shield
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { API_URL } from '@/lib/config';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Painel', href: '/' },
@@ -28,7 +29,10 @@ export default function Sidebar() {
   const router = useRouter();
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    await fetch(`${API_URL}/api/auth/logout`, { 
+      method: 'POST',
+      credentials: 'include'
+    });
     router.push('/login');
   };
 

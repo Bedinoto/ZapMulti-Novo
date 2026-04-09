@@ -2,12 +2,13 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { API_URL } from '@/lib/config';
 
 export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    fetch('/api/auth/me')
+    fetch(`${API_URL}/api/auth/me`, { credentials: 'include' })
       .then(res => {
         if (res.ok) {
           router.push('/chats');

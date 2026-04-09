@@ -20,6 +20,7 @@ import {
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { API_URL } from '@/lib/config';
 
 interface Contact {
   id: string;
@@ -46,7 +47,7 @@ export default function ContactsPage() {
 
   const fetchContacts = async () => {
     try {
-      const res = await fetch('/api/contacts');
+      const res = await fetch(`${API_URL}/api/contacts`, { credentials: 'include' });
       if (res.status === 401) {
         window.location.href = '/login';
         return;
@@ -66,7 +67,10 @@ export default function ContactsPage() {
 
   useEffect(() => {
     fetchContacts();
-    const socket = io({ transports: ['polling', 'websocket'] });
+    const socket = io(API_URL || undefined, { 
+      transports: ['polling', 'websocket'],
+      withCredentials: true 
+    });
 
     socket.on('whatsapp:contact-new', (contact: Contact) => {
       setContacts(prev => [contact, ...prev]);
@@ -88,13 +92,14 @@ export default function ContactsPage() {
   const handleAddContact = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const url = editingContact ? `/api/contacts/${editingContact.id}` : '/api/contacts';
+      const url = editingContact ? `${API_URL}/api/contacts/${editingContact.id}` : `${API_URL}/api/contacts`;
       const method = editingContact ? 'PUT' : 'POST';
       
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newContact)
+        body: JSON.stringify(newContact),
+        credentials: 'include'
       });
       
       if (res.ok) {
@@ -114,7 +119,10 @@ export default function ContactsPage() {
   const handleDeleteContact = async (id: string) => {
     if (!confirm('Deseja realmente excluir este contato?')) return;
     try {
-      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_URL}/api/contacts/${id}`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
       if (res.ok) {
         fetchContacts();
       } else {

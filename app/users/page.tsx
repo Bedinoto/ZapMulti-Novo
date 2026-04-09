@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
+import { API_URL } from '@/lib/config';
 
 interface UserData {
   id: string;
@@ -39,7 +40,7 @@ export default function UsersPage() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users');
+      const res = await fetch(`${API_URL}/api/users`, { credentials: 'include' });
       if (res.status === 401) {
         window.location.href = '/login';
         return;
@@ -61,7 +62,7 @@ export default function UsersPage() {
 
   useEffect(() => {
     fetchUsers();
-    fetch('/api/auth/me')
+    fetch(`${API_URL}/api/auth/me`, { credentials: 'include' })
       .then(res => {
         if (res.status === 401) { window.location.href = '/login'; return; }
         return res.json();
@@ -71,14 +72,15 @@ export default function UsersPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const url = editingUser ? `/api/users/${editingUser.id}` : '/api/users';
+    const url = editingUser ? `${API_URL}/api/users/${editingUser.id}` : `${API_URL}/api/users`;
     const method = editingUser ? 'PUT' : 'POST';
     
     try {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(formData),
+        credentials: 'include'
       });
       
       if (res.ok) {
@@ -98,7 +100,10 @@ export default function UsersPage() {
   const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir este usuário?')) return;
     try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_URL}/api/users/${id}`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
       if (res.ok) fetchUsers();
       else {
         const data = await res.json();

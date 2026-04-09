@@ -1,8 +1,8 @@
 import mysql from 'mysql2/promise';
 import { nanoid } from 'nanoid';
 
-// Hardcoded Database URL for Hostinger - Using 193.203.175.236 for better compatibility
-const dbUrl = process.env.DATABASE_URL || "mysql://u801415719_zapnovo:+5mNmLbAjF@193.203.175.236:3306/u801415719_zapnovo";
+// Database URL - Priority: Environment Variable > Hardcoded Fallback
+const dbUrl = process.env.DATABASE_URL || "mysql://u801415719_zapapi:+5mNmLbAjF@srv1076.hstgr.io:3306/u801415719_zapapi";
 
 export const pool = mysql.createPool({
   uri: dbUrl,

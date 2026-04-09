@@ -6,9 +6,22 @@ import { parse } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Hardcoded Database URL for Hostinger - MUST BE BEFORE PRISMA IMPORT
-// Using 193.203.175.236 instead of localhost for better compatibility in some environments
-process.env.DATABASE_URL = "mysql://u801415719_zapnovo:+5mNmLbAjF@193.203.175.236:3306/u801415719_zapnovo";
+// Database Configuration
+// Priority: Environment Variable > Hardcoded Fallback
+const DEFAULT_DB_URL = "mysql://u801415719_zapapi:+5mNmLbAjF@srv1076.hstgr.io:3306/u801415719_zapapi";
+if (!process.env.DATABASE_URL) {
+  console.log('[CONFIG] Using hardcoded DATABASE_URL fallback');
+  process.env.DATABASE_URL = DEFAULT_DB_URL;
+} else {
+  console.log('[CONFIG] Using DATABASE_URL from environment');
+}
+
+// Log connection details (without password)
+const dbUrlParsed = new URL(process.env.DATABASE_URL!);
+console.log(`[DATABASE] Attempting connection to: ${dbUrlParsed.host}`);
+console.log(`[DATABASE] User: ${dbUrlParsed.username}`);
+console.log(`[DATABASE] Port: ${dbUrlParsed.port || '3306 (default)'}`);
+console.log(`[DATABASE] Database: ${dbUrlParsed.pathname.substring(1)}`);
 
 import next from 'next';
 import express from 'express';
@@ -27,10 +40,6 @@ const port = Number(process.env.PORT) || 3000;
 const UAZAPI_INSTANCE_NAME = process.env.UAZAPI_INSTANCE_NAME || 'default';
 const UAZAPI_WEBHOOK_URL = process.env.UAZAPI_WEBHOOK_URL;
 
-// Handle Next.js import for ESM
-const nextApp = next({ dev, hostname, port });
-const handle = nextApp.getRequestHandler();
-
 // Global error handlers to prevent crashes on EPIPE or other unexpected errors
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
@@ -39,6 +48,15 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+console.log(`[CONFIG] Current Directory: ${process.cwd()}`);
+console.log(`[CONFIG] __dirname: ${__dirname}`);
+const nextDir = dev ? process.cwd() : path.resolve(__dirname, '..');
+console.log(`[CONFIG] Next.js Directory: ${nextDir}`);
+
+// Handle Next.js import for ESM
+const nextApp = next({ dev, hostname, port, dir: nextDir });
+const handle = nextApp.getRequestHandler();
 
 function normalizeJid(rawJid: string): string {
     if (!rawJid) return '';
@@ -468,6 +486,9 @@ nextApp.prepare().then(async () => {
 
 const expressApp = express();
 
+// Explicitly serve static files from .next/static
+expressApp.use('/_next/static', express.static(path.join(nextDir, '.next/static')));
+
 // Request logger - MUST be first
 expressApp.use((req, res, next) => {
   console.log(`[REQUEST] ${req.method} ${req.url}`);
@@ -477,19 +498,37 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.2.2' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.4.1' });
 });
 
 const server = createServer(expressApp);
+
+// Allow CORS for the frontend domain
+const frontendUrl = process.env.FRONTEND_URL || '*';
+
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: frontendUrl,
     methods: ["GET", "POST"],
     credentials: true
   },
   allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
+});
+
+// Express CORS middleware
+expressApp.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', frontendUrl === '*' ? req.headers.origin : frontendUrl);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
 });
 
 // Middleware to check if Next.js is ready
@@ -535,6 +574,9 @@ expressApp.use((req, res, next) => {
     .catch(err => {
       console.error('✘ Database connection failed!');
       console.error('Error details:', err instanceof Error ? err.message : err);
+      if (err.code === 'ER_ACCESS_DENIED_ERROR') {
+        console.error('>>> ACTION REQUIRED: No Hostinger, vá em MySQL Remoto e adicione o IP: 34.34.253.203 (ou use % para liberar todos os IPs).');
+      }
     });
 
   syncFromDb();
@@ -591,7 +633,16 @@ expressApp.use((req, res, next) => {
   });
 
   expressApp.get('/api/auth/me', authenticate, (req: any, res) => res.json(req.user));
-  expressApp.post('/api/auth/logout', (req, res) => { res.clearCookie('token'); res.json({ success: true }); });
+  expressApp.post('/api/auth/logout', (req, res) => { 
+    const isProd = process.env.NODE_ENV === 'production';
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/'
+    }); 
+    res.json({ success: true }); 
+  });
 
   // User Management
   expressApp.get('/api/users', authenticate, isAdmin, async (req, res) => {

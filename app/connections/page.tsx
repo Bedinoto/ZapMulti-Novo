@@ -17,6 +17,7 @@ import {
 import Image from 'next/image';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
+import { API_URL } from '@/lib/config';
 
 interface Session {
   id: string;
@@ -33,7 +34,7 @@ export default function ConnectionsPage() {
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch('/api/connections');
+      const res = await fetch(`${API_URL}/api/connections`, { credentials: 'include' });
       if (res.status === 401) {
         window.location.href = '/login';
         return;
@@ -53,7 +54,10 @@ export default function ConnectionsPage() {
 
   useEffect(() => {
     fetchSessions();
-    const newSocket = io({ transports: ['polling', 'websocket'] });
+    const newSocket = io(API_URL || undefined, { 
+      transports: ['polling', 'websocket'],
+      withCredentials: true 
+    });
     setSocket(newSocket);
 
     newSocket.on('whatsapp:session-status', (data: any) => {
@@ -79,7 +83,10 @@ export default function ConnectionsPage() {
 
   const handleAddConnection = async () => {
     try {
-      const res = await fetch('/api/connections', { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/connections`, { 
+        method: 'POST',
+        credentials: 'include'
+      });
       if (res.ok) fetchSessions();
     } catch (err) {
       console.error('Failed to add connection:', err);
@@ -89,7 +96,10 @@ export default function ConnectionsPage() {
   const handleDeleteConnection = async (id: string) => {
     if (!confirm('Deseja remover esta conexão?')) return;
     try {
-      const res = await fetch(`/api/connections/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_URL}/api/connections/${id}`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
       if (res.ok) fetchSessions();
     } catch (err) {
       console.error('Failed to delete connection:', err);
@@ -99,7 +109,10 @@ export default function ConnectionsPage() {
   const handleRepairConnection = async (id: string) => {
     if (!confirm('Deseja reparar esta conexão? Isso tentará resolver erros de descriptografia e Bad MAC limpando as chaves de sessão locais.')) return;
     try {
-      const res = await fetch(`/api/connections/${id}/repair`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/connections/${id}/repair`, { 
+        method: 'POST',
+        credentials: 'include'
+      });
       if (res.ok) {
         alert('Reparo iniciado. A conexão será reiniciada em instantes.');
         fetchSessions();

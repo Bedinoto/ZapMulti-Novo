@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
 import Sidebar from '@/components/Sidebar';
 import { cn } from '@/lib/utils';
+import { API_URL } from '@/lib/config';
 
 interface Message {
   key: { remoteJid: string; fromMe: boolean; id: string; };
@@ -224,13 +225,19 @@ function ChatContent() {
     window.addEventListener('click', unlockAudio);
     window.addEventListener('touchstart', unlockAudio);
 
-    const newSocket = io({ transports: ['polling', 'websocket'] });
+    // Use API_URL for socket connection
+    const newSocket = io(API_URL || undefined, { 
+      transports: ['polling', 'websocket'],
+      withCredentials: true 
+    });
     setSocket(newSocket);
-    fetch('/api/whatsapp/status').then(res => {
+    
+    fetch(`${API_URL}/api/whatsapp/status`, { credentials: 'include' }).then(res => {
       if (res.status === 401) { window.location.href = '/login'; return; }
       return res.json();
     }).then(data => { if (data && data.chats) setChats(data.chats); });
-    fetch('/api/auth/me').then(res => {
+    
+    fetch(`${API_URL}/api/auth/me`, { credentials: 'include' }).then(res => {
       if (res.status === 401) { window.location.href = '/login'; return; }
       return res.json();
     }).then(data => { if (data) setCurrentUser(data); });
