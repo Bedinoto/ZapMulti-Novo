@@ -6,6 +6,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS `Message`;
 DROP TABLE IF EXISTS `Chat`;
 DROP TABLE IF EXISTS `Contact`;
+DROP TABLE IF EXISTS `Session`;
 DROP TABLE IF EXISTS `User`;
 
 SET FOREIGN_KEY_CHECKS = 1;
@@ -19,6 +20,16 @@ CREATE TABLE `User` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     UNIQUE INDEX `User_email_key`(`email`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `Session` (
+    `id` VARCHAR(191) NOT NULL,
+    `status` VARCHAR(50) NULL,
+    `qrCode` TEXT NULL,
+    `userInfo` JSON NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -72,4 +83,4 @@ ALTER TABLE `Message` ADD CONSTRAINT `Message_jid_fkey` FOREIGN KEY (`jid`) REFE
 
 -- Inserir Admin Padrão (Senha: admin123)
 INSERT IGNORE INTO `User` (`id`, `email`, `password`, `name`, `role`, `createdAt`, `updatedAt`) 
-VALUES ('admin-user-01', 'uillian.bedinoto@gmail.com', '$2a$10$8K1p/a0WlBG9Z2UvM5v6O.v5v5v5v5v5v5v5v5v5v5v5v5v5v5v5', 'Administrador', 'admin', NOW(), NOW());
+VALUES ('admin-user-01', 'uillian.bedinoto@gmail.com', '$2a$10$gf7wgSkDY1Gy6vlMWYepc.2BbbC936d6yjRvrfAIsTCspJxjbdK5C', 'Administrador', 'admin', NOW(), NOW());
