@@ -536,6 +536,7 @@ const expressApp = express();
 
 // Allow CORS for the frontend domain
 const frontendUrl = process.env.FRONTEND_URL || '*';
+console.log(`[CONFIG] Frontend URL allowed: ${frontendUrl}`);
 
 // Express CORS middleware - MUST be before routes
 expressApp.use((req, res, next) => {
@@ -546,20 +547,29 @@ expressApp.use((req, res, next) => {
     frontendUrl,
     'https://zapmulti-novo.onrender.com',
     'http://violet-wolf-800453.hostingersite.com',
-    'https://violet-wolf-800453.hostingersite.com'
+    'https://violet-wolf-800453.hostingersite.com',
+    'http://localhost:3000',
+    'https://localhost:3000'
   ].map(o => o?.toLowerCase().replace(/\/$/, '')).filter(Boolean);
+
+  console.log(`[CORS] Request from origin: ${origin}, Method: ${req.method}, Path: ${req.path}`);
 
   if (origin && normalizedOrigin) {
     if (frontendUrl === '*' || allowedOrigins.includes(normalizedOrigin)) {
       res.header('Access-Control-Allow-Origin', origin);
+      console.log(`[CORS] Allowed origin: ${origin}`);
+    } else {
+      console.log(`[CORS] Blocked origin: ${origin}. Allowed: ${allowedOrigins.join(', ')}`);
     }
   } else if (frontendUrl !== '*') {
     res.header('Access-Control-Allow-Origin', frontendUrl);
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
   }
   
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
+  res.header('Access-Control-Allow-Headers', '*'); // Allow all headers for debugging
   
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
@@ -584,7 +594,7 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.6' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.7' });
 });
 
 // API Routes - Register early to avoid conflicts
@@ -637,7 +647,7 @@ const io = new Server(server, {
 
 // Middleware to check if Next.js is ready
 expressApp.use((req, res, next) => {
-  if (!isNextReady && !req.path.startsWith('/api')) {
+  if (!isNextReady && !req.path.startsWith('/api') && req.path !== '/health-check') {
     console.log(`[STARTUP] Blocking request to ${req.path} - Next.js not ready`);
     res.status(503).send('Application is starting, please wait...');
     return;
