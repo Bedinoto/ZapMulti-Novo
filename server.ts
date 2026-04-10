@@ -554,17 +554,26 @@ expressApp.use((req, res, next) => {
 
   console.log(`[CORS] Request from origin: ${origin}, Method: ${req.method}, Path: ${req.path}`);
 
-  if (origin && normalizedOrigin) {
-    if (frontendUrl === '*' || allowedOrigins.includes(normalizedOrigin)) {
-      res.header('Access-Control-Allow-Origin', origin);
-      console.log(`[CORS] Allowed origin: ${origin}`);
-    } else {
-      console.log(`[CORS] Blocked origin: ${origin}. Allowed: ${allowedOrigins.join(', ')}`);
+  let isAllowed = false;
+  if (frontendUrl === '*') {
+    isAllowed = true;
+  } else if (origin && normalizedOrigin) {
+    // Check explicit list
+    if (allowedOrigins.includes(normalizedOrigin)) {
+      isAllowed = true;
+    } 
+    // Allow AI Studio preview domains
+    else if (normalizedOrigin.endsWith('.run.app') || normalizedOrigin.includes('google.com')) {
+      isAllowed = true;
+      console.log(`[CORS] AI Studio Preview origin allowed: ${origin}`);
     }
-  } else if (frontendUrl !== '*') {
+  }
+
+  if (isAllowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    console.log(`[CORS] Allowed origin: ${origin}`);
+  } else if (!origin && frontendUrl !== '*') {
     res.header('Access-Control-Allow-Origin', frontendUrl);
-  } else {
-    res.header('Access-Control-Allow-Origin', '*');
   }
   
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -594,7 +603,7 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.7' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.8' });
 });
 
 // API Routes - Register early to avoid conflicts
