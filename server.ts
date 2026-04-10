@@ -508,6 +508,23 @@ async function handleUazapiWebhook(io: Server, payload: any) {
 
 let isNextReady = false;
 
+const authenticate = (req: any, res: any, next: any) => {
+  const token = req.cookies.token;
+  if (!token) return res.status(401).json({ error: 'Não autorizado' });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Token inválido' });
+  }
+};
+
+const isAdmin = (req: any, res: any, next: any) => {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
+  next();
+};
+
 nextApp.prepare().then(async () => {
   isNextReady = true;
   console.log('✔ Next.js is ready');
@@ -522,14 +539,53 @@ expressApp.use('/_next/static', express.static(path.join(nextDir, '.next/static'
 
 // Request logger - MUST be first
 expressApp.use((req, res, next) => {
-  console.log(`[REQUEST] ${req.method} ${req.url}`);
+  if (req.url.startsWith('/api')) {
+    console.log(`[API-REQUEST] ${req.method} ${req.url}`);
+  } else {
+    console.log(`[REQUEST] ${req.method} ${req.url}`);
+  }
   next();
 });
 
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.3' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.4' });
+});
+
+// API Routes - Register early to avoid conflicts
+expressApp.use(express.json({ limit: '50mb' }));
+expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
+expressApp.use(cookieParser());
+
+expressApp.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  console.log(`[LOGIN] Attempt for email: ${email}`);
+  try {
+    const user = await db.user.findUnique({ where: { email } });
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+      console.log(`[LOGIN] Failed for email: ${email} - Invalid credentials`);
+      return res.status(401).json({ error: 'E-mail ou senha incorretos' });
+    }
+    const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('token', token, { 
+      httpOnly: true, 
+      secure: isProd, 
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/'
+    });
+    console.log(`[LOGIN] Success for email: ${email}`);
+    res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+  } catch (err: any) {
+    console.error('[LOGIN] Error:', err);
+    const isConnError = err.code === 'ECONNREFUSED' || err.message.includes('Can\'t reach database');
+    res.status(500).json({ 
+      error: isConnError 
+        ? 'Erro de comunicação com o banco de dados. Verifique se o Host, Usuário e Senha do MySQL estão corretos.' 
+        : 'Erro interno no servidor ao tentar fazer login.' 
+    });
+  }
 });
 
 const server = createServer(expressApp);
@@ -550,7 +606,18 @@ const io = new Server(server, {
 
 // Express CORS middleware
 expressApp.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', frontendUrl === '*' ? req.headers.origin : frontendUrl);
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    frontendUrl,
+    'https://zapmulti-novo.onrender.com',
+    'http://violet-wolf-800453.hostingersite.com',
+    'https://violet-wolf-800453.hostingersite.com'
+  ];
+
+  if (frontendUrl === '*' || (origin && allowedOrigins.includes(origin))) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+  }
+  
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
@@ -610,58 +677,8 @@ expressApp.use((req, res, next) => {
       }
     });
 
+  // Database sync
   syncFromDb();
-
-  expressApp.use(express.json({ limit: '50mb' }));
-  expressApp.use(express.urlencoded({ limit: '50mb', extended: true }));
-  expressApp.use(cookieParser());
-  // expressApp.use('/media', express.static(mediaDir));
-
-  const authenticate = (req: any, res: any, next: any) => {
-    const token = req.cookies.token;
-    if (!token) return res.status(401).json({ error: 'Não autorizado' });
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      req.user = decoded;
-      next();
-    } catch (err) {
-      res.status(401).json({ error: 'Token inválido' });
-    }
-  };
-
-  const isAdmin = (req: any, res: any, next: any) => {
-    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
-    next();
-  };
-
-  expressApp.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    console.log(`[LOGIN] Attempt for email: ${email}`);
-    try {
-      const user = await db.user.findUnique({ where: { email } });
-      if (!user || !bcrypt.compareSync(password, user.password)) {
-        return res.status(401).json({ error: 'E-mail ou senha incorretos' });
-      }
-      const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
-      const isProd = process.env.NODE_ENV === 'production';
-      res.cookie('token', token, { 
-        httpOnly: true, 
-        secure: isProd, // True in production (HTTPS)
-        sameSite: isProd ? 'none' : 'lax',
-        path: '/'
-      });
-      res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
-    } catch (err: any) {
-      console.error('Login error:', err);
-      // Check if it's a connection error
-      const isConnError = err.code === 'ECONNREFUSED' || err.message.includes('Can\'t reach database');
-      res.status(500).json({ 
-        error: isConnError 
-          ? 'Erro de comunicação com o banco de dados. Verifique se o Host, Usuário e Senha do MySQL estão corretos.' 
-          : 'Erro interno no servidor ao tentar fazer login.' 
-      });
-    }
-  });
 
   expressApp.get('/api/auth/me', authenticate, (req: any, res) => res.json(req.user));
   expressApp.post('/api/auth/logout', (req, res) => { 

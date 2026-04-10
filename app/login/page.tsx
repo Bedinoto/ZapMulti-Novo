@@ -40,7 +40,7 @@ export default function LoginPage() {
 
     try {
       const loginUrl = `${API_URL || window.location.origin}/api/auth/login`;
-      console.log('Attempting login at:', loginUrl);
+      console.log('Iniciando tentativa de login em:', loginUrl);
       
       const res = await fetch(loginUrl, {
         method: 'POST',
@@ -48,11 +48,13 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
+      console.log('Resposta do servidor:', res.status, res.statusText);
+
       if (res.ok) {
         router.push('/chats');
       } else {
         const text = await res.text();
-        console.error('Login failed response:', res.status, text);
+        console.error('Falha no login - Resposta detalhada:', { status: res.status, text: text.substring(0, 200) });
         try {
           const data = JSON.parse(text);
           setError(data.error || 'Falha no login');
@@ -75,7 +77,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-600/20">
             <MessageSquare className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.5.3)</h1>
+          <h1 className="text-3xl font-bold text-zinc-900">Bem-vindo (v1.5.4)</h1>
           <p className="text-zinc-500 mt-2">Sincronizado em: {syncTime || '...'}</p>
           {API_URL && <p className="text-[10px] text-zinc-400">API: {API_URL}</p>}
           <div className="mt-2 flex items-center justify-center gap-2">
