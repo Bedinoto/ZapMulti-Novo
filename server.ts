@@ -534,6 +534,40 @@ nextApp.prepare().then(async () => {
 
 const expressApp = express();
 
+// Allow CORS for the frontend domain
+const frontendUrl = process.env.FRONTEND_URL || '*';
+
+// Express CORS middleware - MUST be before routes
+expressApp.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const normalizedOrigin = origin?.toLowerCase().replace(/\/$/, '');
+  
+  const allowedOrigins = [
+    frontendUrl,
+    'https://zapmulti-novo.onrender.com',
+    'http://violet-wolf-800453.hostingersite.com',
+    'https://violet-wolf-800453.hostingersite.com'
+  ].map(o => o?.toLowerCase().replace(/\/$/, '')).filter(Boolean);
+
+  if (origin && normalizedOrigin) {
+    if (frontendUrl === '*' || allowedOrigins.includes(normalizedOrigin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+  } else if (frontendUrl !== '*') {
+    res.header('Access-Control-Allow-Origin', frontendUrl);
+  }
+  
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
+
 // Explicitly serve static files from .next/static
 expressApp.use('/_next/static', express.static(path.join(nextDir, '.next/static')));
 
@@ -550,7 +584,7 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.4' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.6' });
 });
 
 // API Routes - Register early to avoid conflicts
@@ -590,9 +624,6 @@ expressApp.post('/api/auth/login', async (req, res) => {
 
 const server = createServer(expressApp);
 
-// Allow CORS for the frontend domain
-const frontendUrl = process.env.FRONTEND_URL || '*';
-
 const io = new Server(server, {
   cors: {
     origin: frontendUrl,
@@ -602,31 +633,6 @@ const io = new Server(server, {
   allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
-});
-
-// Express CORS middleware
-expressApp.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowedOrigins = [
-    frontendUrl,
-    'https://zapmulti-novo.onrender.com',
-    'http://violet-wolf-800453.hostingersite.com',
-    'https://violet-wolf-800453.hostingersite.com'
-  ];
-
-  if (frontendUrl === '*' || (origin && allowedOrigins.includes(origin))) {
-    res.header('Access-Control-Allow-Origin', origin || '*');
-  }
-  
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
-  
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
 });
 
 // Middleware to check if Next.js is ready
