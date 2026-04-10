@@ -307,7 +307,7 @@ function ChatContent() {
     });
 
     newSocket.on('whatsapp:chats-synced', () => {
-      fetch('/api/whatsapp/status').then(res => res.json()).then(data => {
+      fetch(`${API_URL}/api/whatsapp/status`, { credentials: 'include' }).then(res => res.json()).then(data => {
         if (data && data.chats) setChats(data.chats);
       });
     });
@@ -349,7 +349,10 @@ function ChatContent() {
 
   const handleAcceptChat = async (chatKey: string) => {
     try {
-      const res = await fetch(`/api/whatsapp/chats/${chatKey}/accept`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/whatsapp/chats/${chatKey}/accept`, { 
+        method: 'POST',
+        credentials: 'include'
+      });
       if (!res.ok) {
         const data = await res.json();
         showToast(data.error || 'Erro ao aceitar conversa', 'error');
@@ -361,7 +364,10 @@ function ChatContent() {
 
   const handleRejectChat = async (chatKey: string) => {
     try {
-      const res = await fetch(`/api/whatsapp/chats/${chatKey}/reject`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/whatsapp/chats/${chatKey}/reject`, { 
+        method: 'POST',
+        credentials: 'include'
+      });
       if (!res.ok) {
         const data = await res.json();
         showToast(data.error || 'Erro ao rejeitar conversa', 'error');
@@ -376,7 +382,10 @@ function ChatContent() {
       message: 'Deseja realmente finalizar e excluir esta conversa?',
       onConfirm: async () => {
         try {
-          const res = await fetch(`/api/whatsapp/chats/${chatKey}`, { method: 'DELETE' });
+          const res = await fetch(`${API_URL}/api/whatsapp/chats/${chatKey}`, { 
+            method: 'DELETE',
+            credentials: 'include'
+          });
           if (!res.ok) {
             const data = await res.json();
             showToast(data.error || 'Erro ao finalizar conversa', 'error');
@@ -423,7 +432,12 @@ function ChatContent() {
     setReplyingTo(null);
     const sendRequest = async (body: any) => {
       try {
-        const res = await fetch('/api/whatsapp/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const res = await fetch(`${API_URL}/api/whatsapp/send`, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          credentials: 'include',
+          body: JSON.stringify(body) 
+        });
         if (!res.ok) { 
           const data = await res.json(); 
           showToast(data.error || 'Falha ao enviar', 'error'); 
