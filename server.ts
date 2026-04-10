@@ -510,12 +510,16 @@ let isNextReady = false;
 
 const authenticate = (req: any, res: any, next: any) => {
   const token = req.cookies.token;
-  if (!token) return res.status(401).json({ error: 'Não autorizado' });
+  if (!token) {
+    console.log(`[AUTH] No token found in cookies for ${req.method} ${req.path}`);
+    return res.status(401).json({ error: 'Não autorizado' });
+  }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
     next();
   } catch (err) {
+    console.error(`[AUTH] Token verification failed for ${req.method} ${req.path}:`, err);
     res.status(401).json({ error: 'Token inválido' });
   }
 };
@@ -577,8 +581,9 @@ expressApp.use((req, res, next) => {
   }
   
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', '*'); // Allow all headers for debugging
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS,PATCH');
+  res.header('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Authorization, Accept, Origin, Cookie');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
   
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
@@ -603,7 +608,7 @@ expressApp.use((req, res, next) => {
 // Health check endpoint
 expressApp.get('/health-check', (req, res) => {
   console.log(`[HEALTH] Request from ${req.ip}, isNextReady: ${isNextReady}`);
-  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.5.9' });
+  res.json({ status: 'ok', time: new Date().toISOString(), nextReady: isNextReady, version: '1.6.0' });
 });
 
 // API Routes - Register early to avoid conflicts
@@ -622,6 +627,7 @@ expressApp.post('/api/auth/login', async (req, res) => {
     }
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET);
     const isProd = process.env.NODE_ENV === 'production';
+    console.log(`[LOGIN] Cookie settings: isProd=${isProd}, secure=${isProd}, sameSite=${isProd ? 'none' : 'lax'}`);
     res.cookie('token', token, { 
       httpOnly: true, 
       secure: isProd, 
